@@ -78,6 +78,64 @@ fn known_values_are_kept_across_builds() {
     std::fs::write(dir.join("p.ck"), program("8", "x + 2")).unwrap();
     let (out, computed) = run(&dir);
     assert_eq!(out, "[8, 8, 8]\n2\n");
-    assert_eq!(computed, ["LIST"], "an edit of `build` computes `LIST` again, and only it");
+    // Folding computes again only what uses the new value: `debug LIST`.
+    let (folded, checker): (Vec<_>, Vec<_>) = computed.iter().partition(|c| c.ends_with(", folded"));
+    assert_eq!(checker, ["LIST"], "an edit of `build` computes `LIST` again, and only it");
+    assert!(folded.iter().all(|c| c.contains("`debug`")), "an edit of `build` folds again only what uses `LIST`: {folded:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A call folding computes in a function's body (not a constant), and a
+/// function it never runs.
+fn folding(element: &str, other: &str) -> String {
+    format!(
+        "module p
+
+import std.system (System, ExitCode)
+import std.terminal
+import std.string (debug)
+
+fn build n -> r : n~Nat, r~List Nat
+    decreasing n
+    if n == 0 then [] else {element} :: build (n - 1)
+
+fn other x -> r : x~Nat, r~Nat
+    {other}
+
+export fn main args sys -> code : args~List String, sys~System, code~ExitCode
+    terminal.print_line (debug (build 3)) sys.term
+    terminal.print_line (debug (other (len args))) sys.term
+    Success
+"
+    )
+}
+
+#[test]
+fn folded_values_are_kept_across_builds() {
+    let dir = scratch("folded");
+    let folded = |computed: &[String]| computed.iter().filter(|c| c.ends_with(", folded")).cloned().collect::<Vec<_>>();
+    std::fs::write(dir.join("p.ck"), folding("7", "x + 1")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "[7, 7, 7]\n1\n");
+    let first = folded(&computed);
+    assert!(first.iter().any(|c| c.contains("`build`")), "the first build folds the call of `build`: {computed:?}");
+
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "[7, 7, 7]\n1\n");
+    assert!(computed.is_empty(), "the next build reuses every value, but computed {computed:?}");
+
+    // A function the call doesn't run: still reused.
+    std::fs::write(dir.join("p.ck"), folding("7", "x + 2")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "[7, 7, 7]\n2\n");
+    assert!(computed.is_empty(), "an edit elsewhere keeps it, but computed {computed:?}");
+
+    // The function it runs: computed again, with its new value, and
+    // nothing else is.
+    std::fs::write(dir.join("p.ck"), folding("8", "x + 2")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "[8, 8, 8]\n2\n");
+    assert_eq!(folded(&computed), first, "an edit of `build` computes again what runs it, and only that");
+    assert_eq!(folded(&computed).len(), computed.len(), "an edit of `build` computes no other value: {computed:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
