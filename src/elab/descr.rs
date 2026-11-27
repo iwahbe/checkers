@@ -267,8 +267,12 @@ impl Elab {
                 let callee = self.g.defs[i.callee.0 as usize].name.to_string();
                 let param = self.type_formers(i.callee).into_iter().find(|(p, _)| *p == k).map(|(_, n)| n.to_string()).unwrap_or_default();
                 let root = self.g.defs[why.root.0 as usize].name.to_string();
+                let root_home = &self.g.defs[why.root.0 as usize].module;
                 let through = if why.root == i.callee {
                     String::new()
+                } else if self.hidden_from(&self.cur, crate::core::Marked::Def(why.root)) {
+                    // Another package's private function isn't named (§6 rule 9).
+                    format!(" (through a private function of `{root_home}`)")
                 } else if why.param.as_ref() == param.as_str() {
                     format!(" (through `{root}`)")
                 } else {

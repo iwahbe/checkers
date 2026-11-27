@@ -381,12 +381,15 @@ impl Elab {
     }
 
     /// A module this one imports that declares `name` without exporting
-    /// it, for a `help:` on an unknown or unexported name.
+    /// it, for a `help:` on an unknown or unexported name: one it imports
+    /// by name, or else the prelude, which every module imports.
     pub fn private_in_imports(&self, name: &str) -> Option<String> {
         let mut imported: Vec<&String> = self.module().qualifiers.values().collect();
         imported.sort();
         imported.dedup();
-        imported.into_iter().find(|m| self.declares_privately(m, name)).cloned()
+        let prelude = "std.prelude".to_string();
+        let prelude = (self.cur != prelude).then_some(&prelude);
+        imported.into_iter().chain(prelude).find(|m| self.declares_privately(m, name)).cloned()
     }
 
     /// A `help:` for `name`, a function of a class in scope that isn't in

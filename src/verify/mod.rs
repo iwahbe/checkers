@@ -6,6 +6,7 @@ use crate::core::quote;
 use crate::diag::Diagnostic;
 use crate::elab::{Elab, ObKind, Obligation, Probe, ProbeKind, Vacuity, VacuityKind, WeakenRole};
 use crate::source::Span;
+use std::collections::HashSet;
 
 #[derive(Clone)]
 pub struct Verified {
@@ -764,7 +765,7 @@ fn verify(e: &Elab, user: &str) -> Verified {
                 // A model of a query without the `forall` facts may break
                 // them: shown only once checked against them.
                 let (shown, broken) = if q.foralls { check_foralls(e, user, o, &defs, &model) } else { (Some(model.clone()), None) };
-                let shown = shown.map(|m| render_model(&m, &q.shown, &q.string_vars, &q.array_vars));
+                let shown = shown.map(|m| render_model(&m, &q.shown, &q.string_vars, &q.array_vars, &private_cons(e, user)));
                 let any = shown.is_some();
                 let mut d = failed(e, o, shown);
                 if let Some(n) = broken {
@@ -1788,11 +1789,19 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     let mut sealed = Vec::new();
     let lvl = o.ctx.len();
     crate::elab::collect_sealed(&quote(&e.g, lvl, &o.goal), &e.g, &o.module, &mut sealed);
-    let sealed_note = sealed.first().map(|d| {
-        let info = &e.g.defs[d.0 as usize];
+    let names: Vec<crate::core::Name> = o.ctx.iter().map(|l| l.name.clone()).collect();
+    let sealed_note = sealed.first().map(|s| {
+        let info = &e.g.defs[s.def.0 as usize];
+        let (subject, plural, hidden) = e.sealed_subject(&o.module, s, &names);
         // A builtin has no body for the prover to see, wherever it is used.
-        let what = if info.body.is_none() { format!("is built into `{}`", info.module) } else { format!("is sealed in `{}`", info.module) };
-        format!("`{}` {what}: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`", info.name)
+        let how = if info.body.is_none() { "built into" } else { "sealed in" };
+        if hidden {
+            let uses = if plural { "use" } else { "uses" };
+            let how = if info.body.is_none() { "built into it" } else { "sealed there" };
+            format!("{subject} {uses} a private function of `{}`, {how}: here the prover knows only that function's postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`", info.module)
+        } else {
+            format!("{subject} is {how} `{}`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`", info.module)
+        }
     });
     match model.filter(|m| !m.is_empty()) {
         // One cown named twice needs no counterexample.
@@ -1988,7 +1997,10 @@ fn short(a: &str) -> String {
     a.rsplit('.').next().unwrap_or(a).to_string()
 }
 
-fn pretty(x: &Sx) -> String {
+/// A value in a model, as Checkers source; a value of a constructor in
+/// `hide` (another package's private one, §6 rule 9) is `…`.
+fn pretty(x: &Sx, hide: &HashSet<String>) -> String {
+    let hidden = |a: &str| hide.contains(a.trim_matches('|'));
     // A byte sequence: a `String` (its UTF-8 bytes, §7.3) or `Bytes`.
     if let Some(b) = seq_bytes(x) {
         return match std::str::from_utf8(&b) {
@@ -2010,6 +2022,7 @@ fn pretty(x: &Sx) -> String {
             // A datatype's stand-in base constructor (`smt::base_sym`): no
             // value a program can build.
             a if a.trim_matches('|').ends_with("#base") => "…".into(),
+            a if hidden(a) => "…".into(),
             a => short(a),
         },
         Sx::List(items) => {
@@ -2017,50 +2030,55 @@ fn pretty(x: &Sx) -> String {
                 Some(Sx::Atom(h)) => h.as_str(),
                 Some(Sx::List(l)) if matches!(l.first(), Some(Sx::Atom(a)) if a == "as") => {
                     if let Some(Sx::Atom(c)) = l.get(1) {
-                        return pretty_con(&short(c), &items[1..]);
+                        if hidden(c) {
+                            return "…".into();
+                        }
+                        return pretty_con(&short(c), &items[1..], hide);
                     }
                     ""
                 }
                 _ => "",
             };
             match head {
-                "-" if items.len() == 2 => format!("-{}", pretty(&items[1])),
+                "-" if items.len() == 2 => format!("-{}", pretty(&items[1], hide)),
                 "as" => match items.get(1) {
-                    Some(Sx::Atom(c)) => pretty_con(&short(c), &[]),
+                    Some(Sx::Atom(c)) if hidden(c) => "…".into(),
+                    Some(Sx::Atom(c)) => pretty_con(&short(c), &[], hide),
                     _ => "?".into(),
                 },
                 h if h.starts_with("|tuple") => {
-                    format!("({})", items[1..].iter().map(pretty).collect::<Vec<_>>().join(", "))
+                    format!("({})", items[1..].iter().map(|x| pretty(x, hide)).collect::<Vec<_>>().join(", "))
                 }
                 "" => "?".into(),
-                h => pretty_con(&short(h), &items[1..]),
+                h if hidden(h) => "…".into(),
+                h => pretty_con(&short(h), &items[1..], hide),
             }
         }
     }
 }
 
-fn pretty_con(c: &str, args: &[Sx]) -> String {
+fn pretty_con(c: &str, args: &[Sx], hide: &HashSet<String>) -> String {
     // A datatype's stand-in base constructor (`smt::base_sym`), or a
     // function giving only it (from an empty type): no value to show.
-    if c.ends_with("#base") || c == "const" && args.len() == 1 && pretty(&args[0]) == "…" {
+    if c.ends_with("#base") || c == "const" && args.len() == 1 && pretty(&args[0], hide) == "…" {
         return "…".into();
     }
     if c == "Nil" && args.is_empty() {
         return "[]".into();
     }
     if c == "Cons" && args.len() == 2 {
-        let mut items = vec![pretty(&args[0])];
+        let mut items = vec![pretty(&args[0], hide)];
         let mut rest = args[1].clone();
         loop {
             match &rest {
                 Sx::List(l) if l.len() == 3 && matches!(&l[0], Sx::Atom(a) if short(a) == "Cons")
                     || l.len() == 3 && matches!(&l[0], Sx::List(x) if matches!(x.get(1), Some(Sx::Atom(a)) if short(a) == "Cons")) =>
                 {
-                    items.push(pretty(&l[1]));
+                    items.push(pretty(&l[1], hide));
                     rest = l[2].clone();
                 }
                 other => {
-                    let tail = pretty(other);
+                    let tail = pretty(other, hide);
                     if tail != "[]" {
                         return format!("{} :: {tail}", items.join(" :: "));
                     }
@@ -2082,7 +2100,7 @@ fn pretty_con(c: &str, args: &[Sx]) -> String {
     let parts: Vec<String> = args
         .iter()
         .map(|a| {
-            let p = pretty(a);
+            let p = pretty(a, hide);
             if p.contains(' ') && !p.starts_with('[') && !p.starts_with('(') {
                 format!("({p})")
             } else {
@@ -2160,7 +2178,21 @@ fn seq_items(x: &Sx) -> Option<Vec<Sx>> {
     }
 }
 
-fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arrays: &[String]) -> String {
+/// The SMT names of the constructors another package than `user`'s keeps
+/// private (§6 rule 9): a counterexample in `user` doesn't show them.
+fn private_cons(e: &Elab, user: &str) -> HashSet<String> {
+    (0..e.g.cons.len())
+        .map(|i| crate::core::ConId(i as u32))
+        .filter(|c| e.hidden_from(user, crate::core::Marked::Con(*c)))
+        .map(|c| smt::con_sym(e, c).trim_matches('|').to_string())
+        .collect()
+}
+
+/// The counterexample `text` gives, for the variables `shown`. A value of
+/// a constructor in `hide` (another package's private one, §6 rule 9) is
+/// `…`; a variable whose whole value is one isn't listed, but variables
+/// with the same such value are shown equal, as cowns are.
+fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arrays: &[String], hide: &HashSet<String>) -> String {
     let sx = parse_sx(text);
     let Some(Sx::List(pairs)) = sx.first() else { return String::new() };
     let mut found: Vec<(usize, String)> = Vec::new();
@@ -2174,7 +2206,7 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
                     let s = match seq_bytes(&v) {
                         // An array of anything but `U8` (#624).
                         _ if items.is_some() => {
-                            let shown: Vec<String> = items.unwrap_or_default().iter().map(pretty).collect();
+                            let shown: Vec<String> = items.unwrap_or_default().iter().map(|x| pretty(x, hide)).collect();
                             format!("array.from_list [{}]", shown.join(", "))
                         }
                         // A `String` is its UTF-8 bytes to the solver (§7.3).
@@ -2183,14 +2215,14 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
                             Err(_) => checkers_rt::ops::show_bytes(&b),
                         },
                         Some(b) => checkers_rt::ops::show_bytes(&b),
-                        None => pretty(&v),
+                        None => pretty(&v, hide),
                     };
                     let lvl: usize = k.trim_matches('|').rsplit('#').next().and_then(|n| n.parse().ok()).unwrap_or(pos);
                     // Values of abstract types (capabilities, type variables)
                     // say nothing useful, but which cowns are the same one
                     // does (§8.5): `x = y`.
                     let raw = print_sx(&v);
-                    if raw.contains("std.cown.Cown") && raw.contains("!val!") {
+                    if raw.contains("std.cown.Cown") && raw.contains("!val!") || s == "…" {
                         match cowns.iter_mut().find(|(r, _, _)| *r == raw) {
                             Some((_, _, names)) => names.push(shown[pos].1.clone()),
                             None => cowns.push((raw, lvl, vec![shown[pos].1.clone()])),
