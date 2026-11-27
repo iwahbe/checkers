@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: a cardinality constraint naming what isn't an element: S!val!00
+-- stderr
+-- exit 0

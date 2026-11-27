@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: `as-array` of a function of other sorts: k!0
+-- stderr
+-- exit 0

@@ -1,19 +1,23 @@
 # models.ck — Z3's models of the corpus's queries, checked with `smt.model`.
 #
-# `main models DIR…` takes every query in each DIR (`H.smt2`) that Z3
-# answered `sat` (`H.z3`, SPEC §7.2), reads the values Z3 printed for the
-# query's `(get-value …)` terms into a `Model` (`answer.model_of`), and
-# evaluates each of the query's assertions in it: the context's facts must
-# be true and the goal false (the query asserts it negated).
+# `main models DIR…` accounts for every file in each DIR: each query
+# (`H.smt2`) with its answer (`H.z3`, SPEC §7.2); a query without an
+# answer, an answer without a query, and any other file are listed and
+# fail the run. For each query Z3 answered `sat`, it reads the values Z3
+# printed for the query's `(get-value …)` terms into a `Model`
+# (`answer.model_of`), and evaluates each of the query's assertions in it:
+# the context's facts must be true and the goal false (the query asserts
+# it negated).
 #
 # `main models --z3 PROGRAM DIR…` asks for the whole model instead: for each
 # of those queries it runs `PROGRAM -in` (as `main compare` runs Z3) on the
 # query with `(get-model)` after it, and reads what Z3 prints
 # (`z3model.model_of`). Z3's full model leaves out only two things: the
-# definitions (`define-fun-rec`), which are the query's own and are run as
-# their bodies, and the values of a selector applied to another
-# constructor's value, which `get-model` doesn't print. It needs a `z3`
-# executable (Z3 5.3.3), so `cargo test` doesn't run it.
+# query's definitions with parameters, which are run as their bodies, and
+# the values of a selector applied to another constructor's value, which
+# `get-model` doesn't print. The constants the query defines it prints
+# with their values, and each must be what the definition gives. It needs
+# a `z3` executable (Z3 5.3.3), so `cargo test` doesn't run it.
 #
 # Definitions are run as their own bodies (`model.eval_unfolding`) only
 # when taken as terminating, and nothing here takes one so by itself: SMT-LIB
@@ -27,16 +31,24 @@
 #
 # Each query is counted once, in the first of these that applies:
 #
+# - Z3 answered `unsat` or `unknown`: there is no model to check;
 # - with `--z3`, Z3 run now doesn't answer `sat` (listed);
 # - no `(get-value …)` (without `--z3`): Z3 printed no values;
-# - the query, the answer or the model doesn't read (listed, with why);
+# - the query, the answer or the model doesn't read (listed, with why):
+#   an answer whose first line isn't exactly `sat`, `unsat` or `unknown`
+#   is one of these;
+# - an assertion without a quantifier is false (listed, with which): Z3's
+#   model is not a model;
 # - a `forall` without `:pattern`, or with one: `smt.model` can't evaluate
-#   a quantifier over an infinite sort, so these are not checked;
-# - an assertion is false (listed, with which): Z3's model is not a model;
+#   a quantifier over an infinite sort, so these are not checked further;
 # - all assertions hold;
 # - not determined by what Z3 printed: an assertion needs a value Z3 didn't
 #   print, or something `smt.model` doesn't decide; counted by the first
 #   such reason. These are never counted as holding.
+#
+# With `--z3`, a query that asks `(get-value …)` gets that list and then
+# the model; both are read, and each value must be what the model gives
+# its term.
 #
 # `main model [--terminating] QUERY ANSWER` evaluates one query's
 # assertions in the model of one answer (what `(get-model)` printed, if the
@@ -55,10 +67,11 @@ import std.string
 import std.bytes
 import std.list
 import smtlib (Query, SExpr, Leaf, Node, Symbol)
-import term (Context, Command, DefineFuns, Def, Axiom, Head, Fun, Prim, Sel, ConstArr, Div, Mod, SeqNth, Select, Store, MapAdd, Recursive, Plain)
+import term (Context, Command, DefineFuns, Def, Axiom, Head, Fun, Prim, Sel, ConstArr, Div, Mod, SeqNth, Select, Store, MapAdd, Recursive, Plain, App)
 import model (Value, Truth, Unknown, NotGiven, LambdaNotGiven, OutOfFuel, NotTerminating, WrongSort, IllSorted)
 import answer (Verdict, Sat, Unsat, GaveUp, Other)
 import z3model
+import printed
 
 # How many levels evaluation may go down: definitions' recursion and
 # `lambda`s (`smt.model`).
@@ -67,6 +80,10 @@ let FUEL = 2000
 # What checking one query found.
 enum Outcome
     NoValues
+    # Z3 answered `unsat` or `unknown` (`v`): there is no model to check.
+    Answered v            : v~Bytes
+    # A file that is neither a query nor an answer, in a directory given.
+    Stray what            : what~Bytes
     QueryUnread why       : why~Bytes
     AnswerUnread why      : why~Bytes
     Unpatterned
@@ -117,9 +134,9 @@ fn reason c u kind -> r : c~Context, u~Unknown, kind~Bool, r~Bytes
         NotGiven (Prim SeqNth) -> b"`seq.nth` out of range: Z3 didn't print its value"
         NotGiven (Sel _ _ _)   -> b"a selector of another constructor's value: Z3 didn't print its value"
         NotGiven (Prim Select) -> b"an array Z3 printed, at an index it doesn't say"
-        NotGiven (Prim Store)  -> answer.NO_NORMAL_FORM
-        NotGiven (Prim MapAdd) -> answer.NO_NORMAL_FORM
-        NotGiven (ConstArr _)  -> answer.NO_NORMAL_FORM
+        NotGiven (Prim Store)  -> printed.NO_NORMAL_FORM
+        NotGiven (Prim MapAdd) -> printed.NO_NORMAL_FORM
+        NotGiven (ConstArr _)  -> printed.NO_NORMAL_FORM
         NotGiven _             -> b"something Z3 didn't print"
         LambdaNotGiven         -> b"a `lambda`, which has no normal form"
         OutOfFuel              -> b"evaluation needed more levels than it may go down"
@@ -179,50 +196,68 @@ fn check_query t src z3 -> o : t~Bool, src~Bytes, z3~Bytes, o~Outcome
                                     Ok pairs -> check_in t q pairs
 
 fn check_in t q pairs -> o : t~Bool, q~Query, pairs~List (term.Term, Value), o~Outcome
-    check_with t q (\c -> answer.model_of c pairs FUEL) (\c u -> (reason c u True, reason c u False))
+    check_with t q (\c -> answer.model_of c pairs FUEL) [] (\c u -> (reason c u True, reason c u False))
 
 # Check `q`'s assertions in the model `make` gives for its context, with
-# its definitions marked terminating if `terminating`; `why` says why a
-# term isn't determined (a kind to count by, and the details).
-fn check_with terminating q make why -> o : terminating~Bool, q~Query, make~(Context -> model.Model),
-                                            why~(Context -> Unknown -> (Bytes, Bytes)), o~Outcome
-    let axioms = term.axioms q.context
-    if unpatterned axioms
-        Unpatterned
-    else if axioms != []
-        Patterned
-    else
-        match (if terminating then marked q.context else Ok q.context)
-            Err w -> QueryUnread w
-            Ok c  ->
-                let m = make c
-                let facts = each_fact c m (term.facts c) 1
-                let goal = came (model.eval_unfolding c m q.goal) False
-                let all = facts ++ [(0, goal)]
-                let lambda = not (model.without_lambda c q.goal)
-                let verdict =
-                    match first_wrong all
-                        Some 0 -> Fails b"the goal is true"
-                        Some n -> Fails (b"fact " ++ smtlib.numeral n ++ b" is false")
-                        None   ->
+# its definitions marked terminating if `terminating`, and that each of
+# `own` (a term of the query's and the value Z3 printed for it) is that
+# value there when determined; `why` says why a term isn't determined (a
+# kind to count by, and the details).
+fn check_with terminating q make printed_own why -> o : terminating~Bool, q~Query, make~(Context -> model.Model),
+                                                        printed_own~List (term.Term, Value), why~(Context -> Unknown -> (Bytes, Bytes)),
+                                                        o~Outcome
+    match (if terminating then marked q.context else Ok q.context)
+        Err w -> QueryUnread w
+        Ok c  ->
+            let m = make c
+            let facts = each_fact c m (term.facts c) 1
+            let goal = came (model.eval_unfolding c m q.goal) False
+            let all = facts ++ [(0, goal)]
+            let axioms = term.axioms c
+            match (first_wrong all, first_other c m printed_own)
+                (Some 0, _)    -> Fails b"the goal is true"
+                (Some n, _)    -> Fails (b"fact " ++ smtlib.numeral n ++ b" is false")
+                (None, Some t) -> Fails (b"Z3 printed a value for `" ++ term_name c t ++ b"` that its definition doesn't give")
+                (None, None)   ->
+                    if unpatterned axioms
+                        Unpatterned
+                    else if axioms != []
+                        Patterned
+                    else
+                        let lambda = not (model.without_lambda c q.goal)
+                        let verdict =
                             match first_open all
                                 Some u ->
                                     let (kind, detail) = why c u
                                     Undetermined kind detail
                                 None   -> Holds (term.defs c != []) lambda
-                # `refutes` takes a model where every assertion holds, unless
-                # there is a `lambda` or an unmarked definition.
-                let refutable =
-                    match verdict
-                        Holds _ False -> model.defs_run c
-                        _             -> False
-                if refutable != model.refutes c q.goal m then Disagrees else verdict
+                        # `refutes` takes a model where every assertion holds, unless
+                        # there is a `lambda` or an unmarked definition.
+                        let refutable =
+                            match verdict
+                                Holds _ False -> model.defs_run c
+                                _             -> False
+                        if refutable != model.refutes c q.goal m then Disagrees else verdict
+
+# The first of `own` whose term evaluates in `m` to another value.
+fn first_other c m printed_own -> r : c~Context, m~model.Model, printed_own~List (term.Term, Value), r~Option term.Term
+    match printed_own
+        []             -> None
+        (t, v) :: rest ->
+            match model.eval_unfolding c m t
+                Ok w  -> if w != v then Some t else first_other c m rest
+                Err _ -> first_other c m rest
+
+fn term_name c t -> r : c~Context, t~term.Term, r~Bytes
+    match t
+        App (Fun f) _ -> name_of (term.signature c) f
+        _             -> b"?"
 
 # ── Asking Z3 ────────────────────────────────────────────────────────────────
 
 # Why a term isn't determined in the model Z3's `(get-model)` printed: what
 # Z3 leaves out of it, or what it printed and this reader couldn't evaluate.
-fn z3_reason full c u -> r : full~z3model.Full src, c~Context, u~Unknown, r~(Bytes, Bytes)
+fn z3_reason full c u -> r : full~z3model.Full, c~Context, u~Unknown, r~(Bytes, Bytes)
     let sig = term.signature c
     let unread = b"Z3 printed it, but this reader couldn't evaluate it"
     match u
@@ -263,14 +298,14 @@ fn ask t z3 p src -> o : t~Bool, z3~String, p~Proc, src~Bytes, o~Outcome
                                     if z3model.bang q.context
                                         Undetermined BANG_KIND z3model.BANG
                                     else
-                                        match model_items q es
-                                            Some items ->
-                                                match z3model.full q.context items
+                                        match smtlib.read src
+                                            Err e  -> QueryUnread (smtlib.describe src e)
+                                            Ok qes ->
+                                                match whole_model q qes es
                                                     Err w    -> ModelUnread w
                                                     Ok whole ->
                                                         let make = \c -> z3model.model_of c whole FUEL
-                                                        check_with t q make (\c u -> z3_reason whole c u)
-                                            None       -> ModelUnread AFTER_SAT
+                                                        check_with t q make (z3model.own_values q.context whole) (\c u -> z3_reason whole c u)
                         v   -> NowAnswers (verdict_text v)
 
 # ── The corpus ───────────────────────────────────────────────────────────────
@@ -280,15 +315,16 @@ fn ends_with name suffix -> r : name~String, suffix~Bytes, r~Bool
     let b = string.bytes name
     len b > len suffix and bytes.matches_at b (len b - len suffix) suffix
 
-# `name` without its last three bytes (`.z3`).
-fn stem name -> r : name~String, r~String
+# `name` without its last `k` bytes.
+fn stem name k -> r : name~String, k~Nat, r~String
     let b = string.bytes name
-    match string.from_utf8 (if len b >= 3 then bytes.slice b 0 (len b - 3) else b)
+    match string.from_utf8 (if len b >= k then bytes.slice b 0 (len b - k) else b)
         Some s -> s
         None   -> name
 
-# Every `sat` answer in `dirs`, checked; `None` if a directory or file can't
-# be read.
+# Every file in `dirs`, accounted for: each query with its answer (checked
+# if Z3 answered `sat`), and anything else listed; `None` if a directory or
+# file can't be read.
 fn in_dirs how dirs io fs -> r : how~(Bytes -> Bytes -> Outcome), dirs~List String, io~Term, fs~Fs, r~Option (List (Bytes, Outcome))
     match dirs
         []          -> Some []
@@ -298,36 +334,54 @@ fn in_dirs how dirs io fs -> r : how~(Bytes -> Bytes -> Outcome), dirs~List Stri
                     let _ = terminal.eprint_line ("error: " ++ dir ++ ": " ++ files.describe e) io
                     None
                 Ok es ->
-                    match (each how dir es io fs, in_dirs how rest io fs)
+                    let names = list.map (\e -> e.name) es
+                    match (each how dir names es io fs, in_dirs how rest io fs)
                         (Some xs, Some ys) -> Some (xs ++ ys)
                         _                  -> None
 
-fn each how dir es io fs -> r : how~(Bytes -> Bytes -> Outcome), dir~String, es~List Entry, io~Term, fs~Fs, r~Option (List (Bytes, Outcome))
+fn each how dir names es io fs -> r : how~(Bytes -> Bytes -> Outcome), dir~String, names~List String, es~List Entry, io~Term,
+                                      fs~Fs, r~Option (List (Bytes, Outcome))
     match es
         []        -> Some []
         e :: rest ->
-            if e.dir or not (ends_with e.name b".z3")
-                each how dir rest io fs
-            else
-                let base = (if ends_with dir b"/" then dir else dir ++ "/") ++ stem e.name
-                let z3_path = dir ++ "/" ++ e.name
-                match files.read z3_path fs
-                    Err err ->
-                        let _ = terminal.eprint_line ("error: " ++ z3_path ++ ": " ++ files.describe err) io
-                        None
-                    Ok z3   ->
-                        if answer.verdict z3 != Sat
-                            each how dir rest io fs
-                        else
-                            let query_path = base ++ ".smt2"
-                            match files.read query_path fs
-                                Err err ->
-                                    let _ = terminal.eprint_line ("error: " ++ query_path ++ ": " ++ files.describe err) io
-                                    None
-                                Ok src  ->
-                                    match each how dir rest io fs
-                                        Some more -> Some ((string.bytes base, how src z3) :: more)
-                                        None      -> None
+            let base = \k -> (if ends_with dir b"/" then dir else dir ++ "/") ++ stem e.name k
+            let here =
+                if e.dir
+                    Some (Some (string.bytes (dir ++ "/" ++ e.name), Stray b"a directory"))
+                else if ends_with e.name b".z3"
+                    if list.contains names (stem e.name 3 ++ ".smt2")
+                        match pair how (base 3) io fs
+                            Some o -> Some (Some (string.bytes (base 3), o))
+                            None   -> None
+                    else
+                        Some (Some (string.bytes (base 3), QueryUnread b"no such file, beside its answer"))
+                else if ends_with e.name b".smt2"
+                    if list.contains names (stem e.name 5 ++ ".z3") then Some None else Some (Some (string.bytes (base 5), AnswerUnread b"no such file, beside its query"))
+                else
+                    Some (Some (string.bytes (dir ++ "/" ++ e.name), Stray b"neither a query (`.smt2`) nor an answer (`.z3`)"))
+            match (here, each how dir names rest io fs)
+                (Some (Some x), Some more) -> Some (x :: more)
+                (Some None, Some more)     -> Some more
+                _                          -> None
+
+# The query `base.smt2` and its answer `base.z3`: checked if Z3 answered
+# `sat`.
+fn pair how base io fs -> r : how~(Bytes -> Bytes -> Outcome), base~String, io~Term, fs~Fs, r~Option Outcome
+    let z3_path = base ++ ".z3"
+    let query_path = base ++ ".smt2"
+    match (files.read z3_path fs, files.read query_path fs)
+        (Err err, _)    ->
+            let _ = terminal.eprint_line ("error: " ++ z3_path ++ ": " ++ files.describe err) io
+            None
+        (_, Err err)    ->
+            let _ = terminal.eprint_line ("error: " ++ query_path ++ ": " ++ files.describe err) io
+            None
+        (Ok z3, Ok src) ->
+            match answer.verdict z3
+                Sat    -> Some (how src z3)
+                Unsat  -> Some (Answered b"unsat")
+                GaveUp -> Some (Answered b"unknown")
+                Other  -> Some (AnswerUnread b"its first line after the comments is not exactly `sat`, `unsat` or `unknown`")
 
 fn count p xs -> n : p~(Outcome -> Bool), xs~List (Bytes, Outcome), n~Nat
     match xs
@@ -361,6 +415,7 @@ fn listed xs -> r : xs~List (Bytes, Outcome), r~Bytes
                     NowAnswers w   -> p ++ b": Z3 now answers " ++ w ++ b"\n"
                     Fails w        -> p ++ b": Z3's model is not a model: " ++ w ++ b"\n"
                     Disagrees      -> p ++ b": `refutes` disagrees with the assertions one by one\n"
+                    Stray w        -> p ++ b": " ++ w ++ b"\n"
                     _              -> b""
             here ++ listed rest
 
@@ -373,6 +428,16 @@ fn is_no_values o -> r : o~Outcome, r~Bool
     match o
         NoValues -> True
         _        -> False
+
+fn is_answered v o -> r : v~Bytes, o~Outcome, r~Bool
+    match o
+        Answered w -> w == v
+        _          -> False
+
+fn is_stray o -> r : o~Outcome, r~Bool
+    match o
+        Stray _ -> True
+        _       -> False
 
 fn is_unread o -> r : o~Outcome, r~Bool
     match o
@@ -439,7 +504,10 @@ fn defs_how terminating -> r : terminating~Bool, r~Bytes
 # The report on `xs`: the queries listed, then the counts.
 export fn report terminating xs -> r : terminating~Bool, xs~List (Bytes, Outcome), r~Bytes
     let n = \p -> count p xs
-    listed xs ++ terms_line terminating ++ smtlib.numeral (list.length xs) ++ b" `sat` answers\n"
+    listed xs ++ terms_line terminating ++ smtlib.numeral (list.length xs) ++ b" queries and other files\n"
+        ++ line (n is_stray) b"neither a query nor an answer (listed above)"
+        ++ line (n (is_answered b"unsat")) b"answered `unsat`: no model to check"
+        ++ line (n (is_answered b"unknown")) b"answered `unknown`: no model to check"
         ++ line (n is_now_answers) b"where Z3 run now doesn't answer `sat` (with `--z3`; listed above)"
         ++ line (n is_no_values) b"without `(get-value …)`: no values printed"
         ++ line (n is_unread) b"whose query, answer or model doesn't read (listed above)"
@@ -474,7 +542,7 @@ export fn run args io fs p -> ok : args~List String, io~Term, fs~Fs, p~Proc, ok~
         None    -> False
         Some xs ->
             let _ = terminal.write_bytes (report t xs) io
-            count is_unread xs == 0 and count is_fails xs == 0 and count is_disagrees xs == 0
+            count is_unread xs == 0 and count is_stray xs == 0 and count is_fails xs == 0 and count is_disagrees xs == 0
 
 # ── One query ────────────────────────────────────────────────────────────────
 
@@ -497,8 +565,8 @@ export fn one src z3 terminating -> r : src~Bytes, z3~Bytes, terminating~Bool, r
         Err e -> head ++ b"the query doesn't read: " ++ smtlib.describe src e ++ b"\n"
         Ok q  ->
             match model_maker q src z3
-                Err why              -> head ++ why ++ b"\n"
-                Ok (kind, make, why) ->
+                Err why                           -> head ++ why ++ b"\n"
+                Ok (kind, make, printed_own, why) ->
                     match (if terminating then marked q.context else Ok q.context)
                         Err why -> head ++ why ++ b"\n"
                         Ok c    ->
@@ -508,8 +576,21 @@ export fn one src z3 terminating -> r : src~Bytes, z3~Bytes, terminating~Bool, r
                             let note = if axioms == [] then b"" else b"a `forall`: not evaluated\n"
                             let defs = if has_recursive (term.defs c) then terms_line terminating else b""
                             let last = if answer.verdict z3 == Sat then b"refutes: " ++ refutes_text c q.goal m ++ b"\n" else b""
-                            head ++ kind ++ defs ++ note ++ fact_lines c (each_fact c m (term.facts c) 1) why ++ b"the negated goal: "
-                                ++ came_text c goal why ++ b"\n" ++ last
+                            head ++ kind ++ defs ++ note ++ own_lines c m printed_own why ++ fact_lines c (each_fact c m (term.facts c) 1) why
+                                ++ b"the negated goal: " ++ came_text c goal why ++ b"\n" ++ last
+
+# For each constant the query defines and Z3 printed, whether its printed
+# value is what its definition gives.
+fn own_lines c m printed_own why -> r : c~Context, m~model.Model, printed_own~List (term.Term, Value), why~(Context -> Unknown -> Bytes),
+                                        r~Bytes
+    match printed_own
+        []             -> b""
+        (t, v) :: rest ->
+            let said =
+                match model.eval_unfolding c m t
+                    Ok w  -> if w == v then b"as its definition gives" else b"not what its definition gives"
+                    Err u -> b"not determined: " ++ why c u
+            b"Z3's value of `" ++ term_name c t ++ b"`: " ++ said ++ b"\n" ++ own_lines c m rest why
 
 # The `f`-th function's name.
 fn name_of sig f -> r : sig~term.Sig, f~Nat, r~Bytes
@@ -538,12 +619,13 @@ fn refutes_text c goal m -> r : c~Context, goal~term.Term, m~model.Model, r~Byte
     else
         b"no"
 
-# Whether `e` is what `(get-model)` prints: a list of `define-fun`s,
-# `declare-fun`s and cardinality constraints, empty for an empty model.
-fn is_full_model e -> r : e~SExpr src, r~Bool
+# The items of `e`, if it is what `(get-model)` prints: a list of
+# `define-fun`s, `declare-fun`s and cardinality constraints, empty for an
+# empty model.
+fn model_list e -> r : e~SExpr src, r~Option (List (SExpr src))
     match e
-        Node items _ -> list.all model_item items
-        _            -> False
+        Node items _ -> if list.all model_item items then Some items else None
+        _            -> None
 
 fn model_item e -> r : e~SExpr src, r~Bool
     match e
@@ -556,16 +638,43 @@ let AFTER_SAT = b"after `sat`, not exactly what the query asks for: its `(get-va
 
 let BANG_KIND = b"a name with `!` in the query, as Z3's own names in its model"
 
-# The model's items in an answer to `q` with `(get-model)` after it: `sat`,
-# the `(get-value …)` list if `q` asks one, then the model, and nothing
-# else.
-fn model_items q es -> r : q~Query, es~List (SExpr src), r~Option (List (SExpr src))
+let NOT_GIVEN_BY = b"a value printed for `(get-value …)` isn't what the model printed gives its term"
+
+# What an answer to `q` with `(get-model)` after it holds after `sat`: the
+# `(get-value …)` list if `q` asks one, and the model's items; `None` if
+# it holds anything else.
+fn model_items q es -> r : q~Query, es~List (SExpr src), r~Option (Option (SExpr src), List (SExpr src))
     match (q.values, es)
-        (None, [Leaf (Symbol v False) _, Node items at])                    ->
-            if v == b"sat" and is_full_model (Node items at) then Some items else None
-        (Some _, [Leaf (Symbol v False) _, Node (_ :: _) _, Node items at]) ->
-            if v == b"sat" and is_full_model (Node items at) then Some items else None
-        _                                                                   -> None
+        (None, [Leaf (Symbol v False) _, m])         ->
+            if v == b"sat"
+                match model_list m
+                    Some items -> Some (None, items)
+                    None       -> None
+            else
+                None
+        (Some _, [Leaf (Symbol v False) _, vals, m]) ->
+            if v == b"sat"
+                match model_list m
+                    Some items -> Some (Some vals, items)
+                    None       -> None
+            else
+                None
+        _                                            -> None
+
+# The model `(get-model)` printed in the answer `es` to `q` (whose
+# S-expressions are `qes`), read whole; and the `(get-value …)` list before
+# it, if `q` asks one, read too: each value must be what that model gives
+# its term.
+fn whole_model q qes es -> r : q~Query, qes~List (SExpr qsrc), es~List (SExpr src), r~Result z3model.Full Bytes
+    match model_items q es
+        None               -> Err AFTER_SAT
+        Some (vals, items) ->
+            let whole = try z3model.full q.context items
+            match (q.values, vals)
+                (Some ts, Some v) ->
+                    let ps = try answer.values_list q.context ts (answer.asked qes) v
+                    if answer.given_by q.context ps (z3model.model_of q.context whole FUEL) then Ok whole else Err NOT_GIVEN_BY
+                _                 -> Ok whole
 
 # The model an answer gives, a line saying which kind it is, and why a
 # term isn't determined in it: what `(get-model)` printed, if the answer
@@ -574,12 +683,12 @@ fn model_items q es -> r : q~Query, es~List (SExpr src), r~Option (List (SExpr s
 # there is no model: the assertions are evaluated with nothing given (a
 # closed term still has its value), and `refutes` isn't asked.
 fn model_maker q src z3 -> r : q~Query, src~Bytes, z3~Bytes,
-                               r~Result (Bytes, (Context -> model.Model), (Context -> Unknown -> Bytes)) Bytes
+                               r~Result (Bytes, (Context -> model.Model), List (term.Term, Value), (Context -> Unknown -> Bytes)) Bytes
     let plain = \c u -> reason c u False
     let v = answer.verdict z3
     if v != Sat
         let kind = b"no model: Z3 answered " ++ verdict_text v ++ b"; the assertions with nothing given:\n"
-        Ok (kind, \c -> answer.empty_model (term.signature c) FUEL, plain)
+        Ok (kind, \c -> answer.empty_model (term.signature c) FUEL, [], plain)
     else if z3model.bang q.context
         Err (b"no model read: " ++ z3model.BANG)
     else
@@ -589,20 +698,20 @@ fn model_maker q src z3 -> r : q~Query, src~Bytes, z3~Bytes,
             (_, Err e)      -> Err (b"the query doesn't read: " ++ smtlib.describe src e)
             (Ok es, Ok qes) ->
                 match (model_items q es, q.values, es)
-                    (Some items, _, _)                      ->
-                        match z3model.full q.context items
+                    (Some _, _, _)                          ->
+                        match whole_model q qes es
                             Err why  -> Err (UNREAD ++ why)
                             Ok whole ->
                                 let why = \c u ->
                                     let (_, detail) = z3_reason whole c u
                                     detail
-                                Ok (b"model: (get-model)\n", \c -> z3model.model_of c whole FUEL, why)
+                                Ok (b"model: (get-model)\n", \c -> z3model.model_of c whole FUEL, z3model.own_values q.context whole, why)
                     (None, Some ts, _)                      ->
                         match answer.printed q.context ts (answer.asked qes) es
                             Err why -> Err (UNREAD ++ why)
-                            Ok ps   -> Ok (b"model: (get-value …)\n", \c -> answer.model_of c ps FUEL, plain)
+                            Ok ps   -> Ok (b"model: (get-value …)\n", \c -> answer.model_of c ps FUEL, [], plain)
                     (None, None, [Leaf (Symbol w False) _]) ->
-                        if w == b"sat" then Ok (b"", \c -> answer.empty_model (term.signature c) FUEL, plain) else Err (UNREAD ++ AFTER_SAT)
+                        if w == b"sat" then Ok (b"", \c -> answer.empty_model (term.signature c) FUEL, [], plain) else Err (UNREAD ++ AFTER_SAT)
                     _                                       -> Err (UNREAD ++ AFTER_SAT)
 
 fn verdict_text v -> r : v~Verdict, r~Bytes

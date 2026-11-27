@@ -181,13 +181,17 @@ export enum Unknown
 
 # The elements of an uninterpreted sort: `UpTo n` is `Element 0` to
 # `Element n` (never empty, as SMT-LIB requires); `Countable` is every
-# `Element n`. Countable domains are all that is needed (Löwenheim–Skolem,
+# `Element n`; `Unsized` is a sort whose size the model doesn't say (Z3's
+# `(get-value …)` values give elements but no universe): every `Element n`
+# may be one, and whatever depends on how many there are isn't
+# determined (no array over it is made by a store). Countable domains are all that is needed (Löwenheim–Skolem,
 # see the module's comment). Every `Model` here is a Checkers value, so its
 # functions are computable: "every model" in this module means every such
 # one.
 export enum Domain
     UpTo n : n~Nat
     Countable
+    Unsized
 
 # An interpretation of a context's symbols, and of what SMT-LIB leaves
 # unspecified. Each function may answer `None`: then the model doesn't say,
@@ -259,6 +263,7 @@ fn in_domain d n -> r : d~Domain, n~Nat, r~Bool
     match d
         UpTo last -> n <= last
         Countable -> True
+        Unsized   -> True
 
 # Whether `v`, given by the model, is a value of sort `s`. An array is one
 # the model names as an element of its sort.
@@ -598,6 +603,7 @@ fn index_kind sig dom i -> k : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort
             match dom u args
                 UpTo n    -> if n < LISTED then Listed (elements_upto n) else Opaque
                 Countable -> Unbounded
+                Unsized   -> Opaque
         _           -> if unbounded sig dom i then Unbounded else Opaque
 
 # `Element 0`, …, `Element n`.
@@ -958,6 +964,12 @@ export fn store_array sig dom s a j x -> r : sig~Sig, dom~(Nat -> List Sort -> D
             match normal_store sig dom s k j x
                 Some l -> Some (ArrayElem l)
                 None   -> None
+        _           -> None
+
+# The element at `j` of the array `a` is there.
+export fn select_array a j -> r : a~Value, j~Value, r~Option Value
+    match a
+        ArrayElem k -> normal_select k j
         _           -> None
 
 # Kleene's `and` of two answers.

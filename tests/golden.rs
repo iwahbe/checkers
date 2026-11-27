@@ -48,6 +48,8 @@
 //!                         too, checks with no errors and no warnings.
 //! tests/smt/NAME.smt2  → NAME.out is what `smt/main.ck parse` writes for it: the
 //!                         query written back, or the error reading it (line and column).
+//! tests/smt/models/corpus/ → tests/smt/models/models.out is what `smt/main.ck models
+//!                         --terminating` writes for it: every file accounted for.
 //! tests/smt/model/NAME.smt2 → NAME.out is what `smt/main.ck model NAME.smt2 NAME.z3`
 //!                         writes (with `--terminating`, but for `unmarked_*`): each assertion in
 //!                         the model of Z3's answer NAME.z3
@@ -919,6 +921,10 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
             fs::read_to_string(&saved.0).unwrap_or_default()
         );
         compare(root, &root.join(dir).join("compare.out"), &actual, update, &mut failures);
+        // `main models` accounts for every file of a directory.
+        count += 1;
+        let out = run_with(&exe.0, &["models", "--terminating", "tests/smt/models/corpus"], b"", root);
+        compare(root, &root.join("tests/smt/models/models.out"), &shown(&out), update, &mut failures);
         // The reader's reserved spellings are those scripts/reserved.py
         // measured with Z3 (smt/reserved.txt); never rewritten here.
         count += 1;

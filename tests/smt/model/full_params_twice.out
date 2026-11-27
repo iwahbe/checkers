@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: a definition whose parameters share a name: x
+-- stderr
+-- exit 0

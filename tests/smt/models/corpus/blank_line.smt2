@@ -1,0 +1,6 @@
+(set-logic ALL)
+(declare-const x Int)
+(assert (= x 1))
+(assert (not false))
+(check-sat)
+(get-value (x))

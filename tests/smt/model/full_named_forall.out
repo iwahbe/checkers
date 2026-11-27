@@ -1,0 +1,9 @@
+-- stdout
+z3: sat
+model: (get-model)
+a `forall`: not evaluated
+fact 1: holds
+the negated goal: holds
+refutes: no (a `forall`)
+-- stderr
+-- exit 0

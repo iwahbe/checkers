@@ -1,0 +1,13 @@
+(set-logic ALL)
+; A model's bodies may use `seq.len`, `seq.nth`, `select`, `div`, `mod`,
+; testers and selectors. (The answer is edited to use each.)
+(declare-datatypes ((B 0)) (((mk (un Int)) (none))))
+(declare-fun g ((Seq Int)) Int)
+(declare-fun h (B) Int)
+(declare-fun k ((Array Int Int)) Int)
+(assert (= (g (seq.unit 5)) 10))
+(assert (= (h (mk 4)) 4))
+(assert (= (h none) 0))
+(assert (= (k ((as const (Array Int Int)) 9)) 9))
+(assert (not false))
+(check-sat)

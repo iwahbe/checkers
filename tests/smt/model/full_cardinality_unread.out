@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: an item of the model that isn't `define-fun`, `declare-fun` or a cardinality constraint
+-- stderr
+-- exit 0

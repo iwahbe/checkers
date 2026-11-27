@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: a name this reader can't read here: 1
+-- stderr
+-- exit 0

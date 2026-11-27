@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: a value printed for `(get-value …)` isn't what the model printed gives its term
+-- stderr
+-- exit 0

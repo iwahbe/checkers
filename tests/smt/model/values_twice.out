@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: values printed that contradict each other
+-- stderr
+-- exit 0

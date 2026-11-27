@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: `as` of a bound name: R
+-- stderr
+-- exit 0
