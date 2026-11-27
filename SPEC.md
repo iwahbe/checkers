@@ -884,7 +884,7 @@ Other warnings:
 | W024 | a record field nothing used reads (#633) |
 | W030 | a documentation link (`[name]`) that names no symbol in scope (#642 c) |
 | W031 | a documentation link to a symbol that isn't exported (#642 c) |
-| W032 | a code block in documentation that doesn't compile cleanly: each of its diagnostics, at its place (#642 d) |
+| W032 | a code block in documentation that doesn't compile cleanly: each of its diagnostics, at its place, and each of its imports' at the block's fence (#642 d); not those of the module whose doc comment holds the block, which it imports directly or through other imports, since they are reported at their own places (#704) |
 | W033 | a `compile_fail` block that compiles, or fails with another error than it names (#642 d) |
 | W034 | a code block whose `main` doesn't exit with `Success` (`checkers doc` and `checkers site`, #642 d) |
 
