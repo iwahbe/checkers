@@ -942,10 +942,39 @@ impl Elab {
         while let ExprKind::App(g, _) = &f.kind {
             f = g;
         }
-        let ExprKind::Con(n) = &f.kind else { return None };
-        match self.resolve(n, true) {
+        self.class_named(f, None)
+    }
+
+    /// The class `e` names: `C`, or `m.C` through an import's qualifier
+    /// `m`, as `m.T` names a type. In an expression (`cx`), a local named
+    /// `m` hides the qualifier.
+    pub fn class_named(&self, e: &Expr, cx: Option<&Cx>) -> Option<TyId> {
+        let sym = match &e.kind {
+            ExprKind::Con(n) => self.resolve(n, true),
+            ExprKind::Field(q, n) => match &q.kind {
+                ExprKind::Var(q) if cx.is_none_or(|cx| cx.lookup(q).is_none()) => self.resolve_qualified(&self.qualifier(q)?, &n.name, true),
+                _ => None,
+            },
+            _ => None,
+        };
+        match sym {
             Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => Some(t),
             _ => None,
+        }
+    }
+
+    /// Index a use of the class `tid` written as `e` (`C` or `m.C`).
+    pub fn index_class(&mut self, e: &Expr, tid: TyId) {
+        match &e.kind {
+            ExprKind::Field(x, n) => {
+                if let ExprKind::Var(q) = &x.kind {
+                    if let Some(m) = self.qualifier(q) {
+                        self.index_module(x.span, &m);
+                    }
+                }
+                self.index_sym(n.span, Sym::Ty(tid));
+            }
+            _ => self.index_sym(e.span, Sym::Ty(tid)),
         }
     }
 
@@ -1574,7 +1603,7 @@ impl Elab {
         }
         match &f.kind {
             ExprKind::Con(n) if args > 0 => local.contains_key(n) || self.class_clause(e).is_some(),
-            _ => false,
+            _ => args > 0 && self.class_clause(e).is_some(),
         }
     }
 
@@ -1776,11 +1805,71 @@ impl Elab {
         Some((head_ty, Some(name)))
     }
 
+    /// An instance's class as written (`C`, or `m.C` through its module's
+    /// qualifier): the name it is resolved by, and its name as declared,
+    /// for messages. `m.C` is resolved once, as in any other use.
+    fn instance_class(&mut self, e: &Expr) -> (String, Ident) {
+        match &e.kind {
+            ExprKind::Field(x, n) => {
+                if let ExprKind::Var(q) = &x.kind {
+                    if let Some(m) = self.qualifier(q) {
+                        self.index_module(x.span, &m);
+                    }
+                }
+                (self.context_class(e).unwrap_or_default(), n.clone())
+            }
+            ExprKind::Con(n) => (n.clone(), Ident { name: n.clone(), span: e.span }),
+            _ => unreachable!("the parser gives an instance's class as `C` or `m.C`"),
+        }
+    }
+
+    /// An instance's class that isn't one: `C`, or `m.C`, reported as any
+    /// qualified name is when `m` or its export `C` isn't found.
+    fn not_a_class(&mut self, written: &Expr, class: &Ident) {
+        if let ExprKind::Field(x, n) = &written.kind {
+            if let ExprKind::Var(q) = &x.kind {
+                match self.qualifier(q) {
+                    None => {
+                        self.err(Diagnostic::error("E0204", format!("unknown name `{q}`"), x.span).with_label("not found"));
+                        return;
+                    }
+                    Some(m) if self.resolve_qualified(&m, &n.name, true).is_none() => {
+                        let mut d = Diagnostic::error("E0206", format!("module `{m}` has no export named `{}`", n.name), n.span);
+                        if self.declares_privately(&m, &n.name) {
+                            d = self.private_help(d, &self.cur, &m, &n.name);
+                        }
+                        self.err(d);
+                        return;
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        let shown = self.src_text(written.span).trim().to_string();
+        self.err(
+            Diagnostic::error("E0280", format!("`{shown}` is not a class"), class.span)
+                .with_help("an instance is of a class declared with `class`"),
+        );
+    }
+
+    /// A class named in an instance's header or context: the name it is
+    /// resolved by, `C` as written (of this module, or imported), or the
+    /// class `m.C` names.
+    fn context_class(&self, e: &Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Con(n) => Some(n.clone()),
+            ExprKind::Field(x, _) if matches!(x.kind, ExprKind::Var(_)) => {
+                Some(self.class_named(e, None).map_or_else(|| self.src_text(e.span).trim().to_string(), |t| Self::sym_name(Sym::Ty(t))))
+            }
+            _ => None,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn desugar_instance(
         &mut self,
         d: &Decl,
-        class: &Ident,
+        written: &Expr,
         tys: &[Expr],
         context: &[Expr],
         members: &[InstMember],
@@ -1788,23 +1877,22 @@ impl Elab {
         decls: &mut Vec<Decl>,
         origins: &mut Vec<Origin>,
     ) {
+        let (key, class) = self.instance_class(written);
+        let (key, class) = (key.as_str(), &class);
         let (first, last) = (tys[0].span, tys[tys.len() - 1].span);
         let tys_span = Span { start: first.start, end: last.end };
         let tys_text = self.src_text(tys_span).trim().to_string();
         let text = format!("{} {tys_text}", class.name);
         // The class: declared here, or imported.
-        let (cparams, cmembers, class_tid) = match local.get(&class.name) {
+        let (cparams, cmembers, class_tid) = match local.get(key) {
             Some((p, ms, _)) => (p.clone(), ms.clone(), None),
-            None => match self.resolve(&class.name, true) {
+            None => match self.resolve(key, true) {
                 Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => {
                     let c = self.class_defs[&t].clone();
                     (c.params.clone(), self.members_for_instance(&c), Some(t))
                 }
                 _ => {
-                    self.err(
-                        Diagnostic::error("E0280", format!("`{}` is not a class", class.name), class.span)
-                            .with_help("an instance is of a class declared with `class`"),
-                    );
+                    self.not_a_class(written, class);
                     return;
                 }
             },
@@ -1859,8 +1947,8 @@ impl Elab {
                 f = g;
             }
             cargs.reverse();
-            let good = match &f.kind {
-                ExprKind::Con(cn) if !cargs.is_empty() => {
+            let good = match self.context_class(f) {
+                Some(cn) if !cargs.is_empty() => {
                     let vs: Option<Vec<String>> = cargs
                         .iter()
                         .map(|a| match &a.kind {
@@ -1870,7 +1958,7 @@ impl Elab {
                         .collect();
                     match vs {
                         Some(vs) => {
-                            ctx.push((cn.clone(), vs));
+                            ctx.push((cn, vs));
                             true
                         }
                         None => false,
@@ -1895,7 +1983,7 @@ impl Elab {
         // (one elsewhere is found when it is registered): at each position,
         // the same type constructor, or a variable in either (#145).
         let overlaps = |p: &PendingInst| {
-            p.class_name == class.name
+            p.class_name == key
                 && p.head_names.len() == head_names.len()
                 && p.head_names.iter().zip(&head_names).all(|(a, b)| a.is_none() || b.is_none() || a == b)
         };
@@ -2155,7 +2243,7 @@ impl Elab {
                         span,
                     });
                     origins.push(Origin::InstMember(inst_ix));
-                    self.member_heads.insert(decls.len() - 1, (class.name.clone(), heads.clone()));
+                    self.member_heads.insert(decls.len() - 1, (key.to_string(), heads.clone()));
                     if transparent {
                         self.transparent_members.insert(decls.len() - 1);
                     }
@@ -2240,7 +2328,7 @@ impl Elab {
                         span,
                     });
                     origins.push(Origin::InstMember(inst_ix));
-                    self.member_heads.insert(decls.len() - 1, (class.name.clone(), heads.clone()));
+                    self.member_heads.insert(decls.len() - 1, (key.to_string(), heads.clone()));
                 }
             }
         }
@@ -2295,7 +2383,7 @@ impl Elab {
                     span: *at,
                 });
                 origins.push(Origin::InstMember(inst_ix));
-                self.member_heads.insert(decls.len() - 1, (class.name.clone(), heads.clone()));
+                self.member_heads.insert(decls.len() - 1, (key.to_string(), heads.clone()));
             }
         }
         if bad {
@@ -2309,7 +2397,7 @@ impl Elab {
                 let c = &self.class_defs[&t];
                 format!("$mk#{}.{}", c.module, c.name)
             }
-            None => format!("$mk#{}.{}", self.cur, class.name),
+            None => format!("$mk#{}.{}", self.cur, key),
         };
         let mut body = con(&mk, sp);
         // Its types, each elaborated as a type (`()` is the unit type).
@@ -2329,7 +2417,7 @@ impl Elab {
             }
         }
         let mut cs = ctx_preds.clone();
-        let dict_ty = tys.iter().fold(con(&class.name, sp), |f, t| app(f, t.clone()));
+        let dict_ty = tys.iter().fold(con(key, sp), |f, t| app(f, t.clone()));
         cs.push(Constraint::Typed { name: ident("$dict", sp), mult: ast::Mult::Many, ty: dict_ty });
         decls.push(Decl {
             export: Export::No,
@@ -2347,7 +2435,7 @@ impl Elab {
         origins.push(Origin::InstDict(inst_ix));
         self.pending_insts.push(PendingInst {
             class: class_tid,
-            class_name: class.name.clone(),
+            class_name: key.to_string(),
             heads,
             head_names,
             vars,
@@ -3509,12 +3597,33 @@ impl Elab {
     pub fn check_dict_con(&mut self, c: ConId, span: Span) {
         let tid = self.g.cons[c.0 as usize].ty;
         if self.class_defs.contains_key(&tid) && !self.cur_fn.is_some_and(|d| self.dict_defs.contains(&d)) {
-            let name = self.class_defs[&tid].name.clone();
-            self.err(
-                Diagnostic::error("E0287", format!("a dictionary of class `{name}` is built only by an instance"), span)
-                    .with_help(format!("declare `instance {name} …`; its functions' bodies and lemmas' proofs are checked there")),
-            );
+            self.dict_built_error(tid, span);
         }
+    }
+
+    /// A name used as a value, `C` or `m.C`: a class there is its
+    /// dictionary, which only its instances build (E0287). Whether it was
+    /// a class, reported.
+    pub fn class_as_value(&mut self, s: Sym, type_pos: bool, span: Span) -> bool {
+        match s {
+            Sym::Con(c) => {
+                self.check_dict_con(c, span);
+                false
+            }
+            Sym::Ty(t) if !type_pos && self.class_defs.contains_key(&t) => {
+                self.dict_built_error(t, span);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn dict_built_error(&mut self, tid: TyId, span: Span) {
+        let name = self.class_defs[&tid].name.clone();
+        self.err(
+            Diagnostic::error("E0287", format!("a dictionary of class `{name}` is built only by an instance"), span)
+                .with_help(format!("declare `instance {name} …`; its functions' bodies and lemmas' proofs are checked there")),
+        );
     }
 
     /// An implicit parameter being given a meta: if it is a dictionary,

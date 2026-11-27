@@ -351,7 +351,16 @@ fn arity_of(f: &Func) -> usize {
 }
 
 impl<'p, M: Module> Gen<'p, M> {
-    pub fn new(mut m: M, p: Program, g: &'p Globals) -> Self {
+    pub fn new(m: M, p: Program, g: &'p Globals) -> Self {
+        Self::with_invoke(m, p, g, Linkage::Export)
+    }
+
+    /// JIT modules share the host's dispatcher; object files define their own.
+    pub fn importing_invoke(m: M, p: Program, g: &'p Globals) -> Self {
+        Self::with_invoke(m, p, g, Linkage::Import)
+    }
+
+    fn with_invoke(mut m: M, p: Program, g: &'p Globals, linkage: Linkage) -> Self {
         let call_conv = m.isa().default_call_conv();
         let mut rt = HashMap::new();
         for (name, n, ret) in RUNTIME {
@@ -380,7 +389,7 @@ impl<'p, M: Module> Gen<'p, M> {
             is.params.push(AbiParam::new(I64));
         }
         is.returns.push(AbiParam::new(I64));
-        let invoke = m.declare_function("ck_invoke", Linkage::Export, &is).expect("declare invoke");
+        let invoke = m.declare_function("ck_invoke", linkage, &is).expect("declare invoke");
         let wk = &g.well_known;
         let nul = |c: Option<crate::core::ConId>| c.map_or(0, |c| w::nullary(c.0) as i64);
         Gen {
@@ -388,7 +397,7 @@ impl<'p, M: Module> Gen<'p, M> {
             p,
             g,
             defined: 0,
-            invoke_defined: false,
+            invoke_defined: linkage == Linkage::Import,
             funcs,
             rt,
             closures: HashMap::new(),

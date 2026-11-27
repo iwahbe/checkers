@@ -138,12 +138,6 @@ fn builds_with_git_and_path_dependencies() {
     assert!(lock.starts_with("{\n  \"shared\": { \"path\": \"../shared\" },\n  \"util\": { \"git\": "), "{lock}");
     assert!(lock.contains("\"version\": \"1.0.0\", \"commit\": \""), "{lock}");
 
-    // The trust ledger lists both packages.
-    let trust = w.checkers("app", &["trust"]);
-    let ledger = text(&trust.stdout);
-    assert!(ledger.contains("<shared>/text/greet.ck  proved   1 by smt, 0 computed\n"), "{ledger}");
-    assert!(ledger.contains("<util>/count.ck  proved   1 by smt, 0 computed\n"), "{ledger}");
-
     // Nothing is fetched again.
     let again = w.checkers("app", &["check"]);
     assert!(again.status.success(), "{}", text(&again.stderr));

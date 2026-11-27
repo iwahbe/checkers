@@ -153,20 +153,7 @@ A class lists functions and lemmas; an instance gives the functions for one type
 
 ## What a proof rests on
 
-`checkers trust FILE.ck` lists every fact a module relies on and how it was established: proven by Z3, computed at compile time, an axiom of the standard library, or an `admit` (an unproven assumption, allowed while developing; `checkers build --release` refuses a program that has one).
-
-```text
-$ checkers trust bounds.ck
-bounds.ck:3:68  smt      postcondition of `skip_spaces`: i <= j (for `skip_spaces src (i + 1)`, line 5)
-bounds.ck:3:68  smt      postcondition of `skip_spaces`: i <= j (for `i`, line 5)
-bounds.ck:3:76  smt      postcondition of `skip_spaces`: j <= len src (for `skip_spaces src (i + 1)`, line 5)
-bounds.ck:3:76  smt      postcondition of `skip_spaces`: j <= len src (for `i`, line 5)
-bounds.ck:4:16  smt      `Nat` subtraction `len src - i` stays at or above zero
-bounds.ck:5:24  smt      index in bounds: i < len src
-bounds.ck:5:43  smt      precondition of `skip_spaces`: i <= len src
-bounds.ck:5:43  smt      termination of `skip_spaces`: `decreasing len src - i` gets smaller
-solver: Z3 5.3.3.0
-```
+A program that checks is proved by Z3 and by computing at compile time, from two kinds of fact taken without a proof: the standard library's axioms (lemmas whose proof is `__builtin`, facts about functions implemented in the runtime, trusted like that code) and `admit`s. An `admit` is an unproven assumption, allowed while developing; `checkers build --release` refuses a program that relies on one.
 
 ## Effects are capabilities
 
@@ -222,7 +209,7 @@ A file is a module (`module name`); `import std.list (sorted)` brings names in. 
 
 ## Tools
 
-- `checkers check|run|build|trust FILE.ck`: the compiler.
+- `checkers check|run|build FILE.ck`: the compiler.
 - `checkers fmt`: one format for every file.
 - `checkers lsp`: the language server: diagnostics as you type (types first, then proofs), hover with signatures and descriptions, go to definition, references, highlighting.
 - `checkers doc DIR -o OUT`: a package's documentation, as on this site.
