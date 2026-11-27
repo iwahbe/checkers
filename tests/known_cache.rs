@@ -78,7 +78,10 @@ fn known_values_are_kept_across_builds() {
     std::fs::write(dir.join("p.ck"), program("8", "x + 2")).unwrap();
     let (out, computed) = run(&dir);
     assert_eq!(out, "[8, 8, 8]\n2\n");
-    assert_eq!(computed, ["LIST"], "an edit of `build` computes `LIST` again, and only it");
+    // Folding computes again only what uses the new value: `debug LIST`.
+    let (folded, checker): (Vec<_>, Vec<_>) = computed.iter().partition(|c| c.ends_with(", folded"));
+    assert_eq!(checker, ["LIST"], "an edit of `build` computes `LIST` again, and only it");
+    assert!(folded.iter().all(|c| c.contains("`debug`")), "an edit of `build` folds again only what uses `LIST`: {folded:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
