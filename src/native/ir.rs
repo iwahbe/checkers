@@ -185,7 +185,7 @@ impl<'g> Compiler<'g> {
             // A constant known at compile time is its value (§8.9).
             Tm::Def(d) => match crate::core::known_const(self.g, *d) {
                 Some(v) => self.go(&v),
-                None => Ir::Global(*d),
+                None => Ir::Global(self.reported(*d)),
             },
             // A constructor stored as its one kept field (#170), used as a
             // function: it returns that argument.
@@ -401,6 +401,16 @@ impl<'g> Compiler<'g> {
                 _ => Ir::Case(self.compile(s), Arc::new(self.case(c))),
             },
             Tm::Error => Ir::Fail("no arm of a `match` matches this value"),
+        }
+    }
+
+    /// The function to call for definition `d` here: its copy whose
+    /// runtime errors name this code's owner, if no runtime error names `d`
+    /// (`spec::report`).
+    fn reported(&self, d: DefId) -> DefId {
+        match self.spec {
+            Some(cx) => super::spec::report(self.g, cx, self.owner, d),
+            None => d,
         }
     }
 

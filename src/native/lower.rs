@@ -80,7 +80,9 @@ pub struct LamCode {
 }
 
 impl LamCode {
-    /// `ir` refers to definitions only, never to a program's copies.
+    /// `ir` refers to definitions only, never to a program's copies,
+    /// except in static data of that program's own code
+    /// (`Lowerer::reported`).
     pub fn new(ir: Arc<Ir>, captured: usize) -> LamCode {
         use crate::native::ir::Named;
         use std::fmt::Write;
@@ -600,7 +602,7 @@ impl Program {
         }
         let base = names.len() as u32;
         Program {
-            specs: std::cell::RefCell::new(crate::native::spec::Specs::new(base)),
+            specs: std::cell::RefCell::new(crate::native::spec::Specs::new(base, g.hidden.borrow().iter().map(|d| d.0).collect())),
             funcs: Vec::new(),
             rc_done: 0,
             code: HashMap::new(),
@@ -705,7 +707,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             }
             // A specialized copy (`spec`): its body, compiled as code of
             // the function it copies.
-            let copy = self.p.specs.borrow().copy(d).map(|c| (c.of, c.body.clone(), c.depth));
+            let copy = self.p.specs.borrow().copy(d).map(|c| (c.owner, c.body.clone(), c.depth));
             let (owner, body, depth) = match copy {
                 // One made where a call is folded: erased code already.
                 Some((_, crate::native::spec::Body::Folded { code, .. }, _)) => {
@@ -715,8 +717,8 @@ impl<'a, 'g> Lowerer<'a, 'g> {
                     self.p.code.insert(d, code);
                     continue;
                 }
-                Some((of, crate::native::spec::Body::Term(body), depth)) => (of, Some(body), depth),
-                None if (d as usize) < ndefs => (DefId(d), crate::native::ir::body_of(g, staged, DefId(d)), 0),
+                Some((owner, crate::native::spec::Body::Term(body), depth)) => (owner, Some(body), depth),
+                None if (d as usize) < ndefs => (Some(DefId(d)), crate::native::ir::body_of(g, staged, DefId(d)), 0),
                 None => continue,
             };
             let Some(body) = body else {
@@ -724,7 +726,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
                 continue;
             };
             let spec = crate::native::spec::SpecCx { table: &self.p.specs, staged, depth };
-            let c = Compiler::specializing(g, Some(owner), spec).compile(&body);
+            let c = Compiler::specializing(g, owner, spec).compile(&body);
             let mut gs = Vec::new();
             globals_in(&c, &mut gs);
             todo.extend(gs.iter().map(|x| x.0));
@@ -769,9 +771,12 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         }
         let (n, _) = lams(self.p.code.get(&d)?);
         let func = self.p.funcs.len() as u32;
-        let owner = self.p.specs.borrow().origin(d);
+        let (origin, owner) = {
+            let specs = self.p.specs.borrow();
+            (specs.origin(d), specs.owner(d).map_or(NO_OWNER, |o| o.0))
+        };
         self.p.funcs.push(Func {
-            name: self.p.names[owner as usize].clone(),
+            name: self.p.names[origin as usize].clone(),
             owner,
             kind: if n > 0 { FnKind::Global } else { FnKind::Caf },
             params: Vec::new(),
@@ -792,7 +797,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         while let Some(d) = self.p.wanted.pop() {
             let ir = self.inline_def(d);
             let (DefShape::Fn { func, .. } | DefShape::Caf { func }) = self.p.defs[&d].clone() else { continue };
-            self.owner = self.p.specs.borrow().origin(d);
+            self.owner = self.p.specs.borrow().owner(d).map_or(NO_OWNER, |o| o.0);
             self.next = 0;
             let (n, body) = lams(&ir);
             let params: Vec<V> = (0..n).map(|_| self.fresh()).collect();
@@ -944,8 +949,8 @@ impl Lowerer<'_, '_> {
     fn inliner<T>(&mut self, f: impl FnOnce(&mut crate::native::inline::Inliner) -> T) -> T {
         let p = &mut *self.p;
         let specs = p.specs.borrow();
-        let origin = |d: u32| specs.origin(d);
-        f(&mut crate::native::inline::Inliner { code: &p.code, recursive: &mut p.recursive, done: &mut p.inlined, origin: &origin })
+        let owner = |d: u32| specs.owner(d);
+        f(&mut crate::native::inline::Inliner { code: &p.code, recursive: &mut p.recursive, done: &mut p.inlined, owner: &owner })
     }
 
     fn float_in(&self, ir: &Ir) -> Ir {
@@ -1048,7 +1053,8 @@ impl Lowerer<'_, '_> {
             Ir::Erased => E::Erased,
             Ir::Lit(v) => Self::lit(v),
             Ir::Static(v, id) => {
-                let (v, id) = &self.lambdas_of(v, *id);
+                let (v, id) = self.reported_static(v, *id);
+                let (v, id) = &self.lambdas_of(&v, id);
                 // The functions it holds are compiled.
                 for x in v.reachable(*id) {
                     match v.node(x) {
@@ -1201,6 +1207,86 @@ impl Lowerer<'_, '_> {
             bounds: HashMap::new(),
         });
         E::MkClo { f, captured: captured_outer }
+    }
+
+    /// The definition a runtime error in the code being lowered names.
+    fn owner_def(&self) -> Option<DefId> {
+        (self.owner != NO_OWNER).then_some(DefId(self.owner))
+    }
+
+    /// Whether no runtime error names definition `d` (`spec::report`).
+    fn hides(&self, d: DefId) -> bool {
+        self.p.specs.borrow().hidden(d)
+    }
+
+    /// The function to call for `d` in the code being lowered
+    /// (`spec::report`), erased if it is a copy made here.
+    fn report(&mut self, d: DefId) -> DefId {
+        let spec = crate::native::spec::SpecCx { table: &self.p.specs, staged: self.staged, depth: 0 };
+        let r = crate::native::spec::report(self.g, spec, self.owner_def(), d);
+        if r != d {
+            self.erase(&[r.0]);
+        }
+        r
+    }
+
+    /// Whether code refers to a definition no runtime error names, or is
+    /// one's (`hides`).
+    fn mentions_hidden(&self, ir: &Ir) -> bool {
+        match ir {
+            Ir::Global(d) => self.hides(*d),
+            Ir::Lam(Some(o), _) | Ir::At(Some(o), _) if self.hides(*o) => true,
+            Ir::Static(v, id) => v.reachable(*id).iter().any(|x| self.node_hides(v.node(*x))),
+            _ => ir.subterms().into_iter().any(|(x, _)| self.mentions_hidden(x)),
+        }
+    }
+
+    fn node_hides(&self, n: &SNode) -> bool {
+        match n {
+            SNode::Global(d) => self.hides(DefId(*d)),
+            SNode::Lam(code) => self.mentions_hidden(&code.ir),
+            _ => false,
+        }
+    }
+
+    /// Code known when compiling (a lambda's in static data, §8.9), made
+    /// code of the definition being lowered as `ir::Compiler` makes code
+    /// (`spec::report`): each function no runtime error names is called
+    /// through its copy for that definition, and code of such a function is
+    /// that definition's.
+    fn reported(&mut self, ir: &Ir) -> Ir {
+        match ir {
+            Ir::Global(d) => Ir::Global(self.report(*d)),
+            Ir::Lam(Some(o), b) if self.hides(*o) => Ir::Lam(self.owner_def(), Arc::new(self.reported(b))),
+            Ir::At(Some(o), b) if self.hides(*o) => Ir::At(self.owner_def(), Arc::new(self.reported(b))),
+            Ir::Static(v, id) => {
+                let (v, id) = self.reported_static(v, *id);
+                Ir::Static(v, id)
+            }
+            _ => ir.map_subterms(|x, _| self.reported(x)),
+        }
+    }
+
+    /// Static data with the functions and lambdas' code it holds made
+    /// code of the definition being lowered (`reported`).
+    fn reported_static(&mut self, v: &Arc<Static>, id: u32) -> (Arc<Static>, u32) {
+        let nodes = v.reachable(id);
+        if !nodes.iter().any(|x| self.node_hides(v.node(*x))) {
+            return (v.clone(), id);
+        }
+        let mut out = Static::default();
+        let mut at: crate::known::FxMap<u32, u32> = Default::default();
+        for &x in &nodes {
+            let n = match v.node(x) {
+                SNode::Global(d) => SNode::Global(self.report(DefId(*d)).0),
+                SNode::Lam(code) if self.mentions_hidden(&code.ir) => SNode::Lam(Arc::new(LamCode::new(Arc::new(self.reported(&code.ir)), code.captured))),
+                SNode::Obj { kind, tag, fields } => SNode::Obj { kind: *kind, tag: *tag, fields: fields.iter().map(|f| at[f]).collect() },
+                SNode::Array { layout, elems } => SNode::Array { layout: *layout, elems: elems.iter().map(|f| at[f]).collect() },
+                n => n.clone(),
+            };
+            at.insert(x, out.add(n));
+        }
+        (Arc::new(out), at[&id])
     }
 
     /// Static data with the lambdas' code it holds (`SNode::Lam`) made

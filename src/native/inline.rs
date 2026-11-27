@@ -56,9 +56,10 @@ pub struct Inliner<'a> {
     pub recursive: &'a mut HashMap<u32, bool>,
     /// Each definition's code after this rewriting, as far as computed.
     pub done: &'a mut HashMap<u32, Arc<Ir>>,
-    /// The definition whose code each definition's is: itself, or the one
-    /// a specialized copy copies (`spec`), which a runtime error names.
-    pub origin: &'a dyn Fn(u32) -> u32,
+    /// The definition a runtime error in each definition's code names:
+    /// itself, or for a copy (`spec`), the one it copies or the one it was
+    /// made for (`spec::report`).
+    pub owner: &'a dyn Fn(u32) -> Owner,
 }
 
 impl Inliner<'_> {
@@ -73,7 +74,7 @@ impl Inliner<'_> {
             return Some(x.clone());
         }
         let code = self.code.get(&d)?.clone();
-        let out = Arc::new(self.go(&code, &Sub::default(), Some(DefId((self.origin)(d))), 0));
+        let out = Arc::new(self.go(&code, &Sub::default(), (self.owner)(d), 0));
         self.done.insert(d, out.clone());
         Some(out)
     }
@@ -152,7 +153,7 @@ impl Inliner<'_> {
         }
         // The body's variables are its parameters, the first outermost:
         // bound by `let`s in the same order, each under the ones before.
-        let mut out = at(Some(DefId((self.origin)(f.0))), clone(body));
+        let mut out = at((self.owner)(f.0), clone(body));
         for (k, x) in args.iter().enumerate().rev() {
             out = bind(Arc::new(shift(x, k, 0)), out);
         }
@@ -655,13 +656,13 @@ mod tests {
         let code = HashMap::new();
         let mut rec = HashMap::new();
         let mut done = HashMap::new();
-        Inliner { code: &code, recursive: &mut rec, done: &mut done, origin: &|d| d }.program(ir, None)
+        Inliner { code: &code, recursive: &mut rec, done: &mut done, owner: &|d| Some(DefId(d)) }.program(ir, None)
     }
 
     fn run_with(code: &HashMap<u32, Arc<Ir>>, ir: &Ir) -> Ir {
         let mut rec = HashMap::new();
         let mut done = HashMap::new();
-        Inliner { code, recursive: &mut rec, done: &mut done, origin: &|d| d }.program(ir, None)
+        Inliner { code, recursive: &mut rec, done: &mut done, owner: &|d| Some(DefId(d)) }.program(ir, None)
     }
 
     fn calls(ir: &Ir) -> usize {

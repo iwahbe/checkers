@@ -47,6 +47,14 @@ impl Elab {
         })
     }
 
+    /// Record, for native code, the functions a runtime error in a program
+    /// whose code is in `module` never names (`Globals::hidden`): those
+    /// `hidden_from` it.
+    pub fn hide_private(&self, module: &str) {
+        let hidden = (0..self.g.defs.len() as u32).map(crate::core::DefId).filter(|d| self.hidden_from(module, Marked::Def(*d))).collect();
+        *self.g.hidden.borrow_mut() = hidden;
+    }
+
     /// The module of `full` (`std.prelude.string_le`), a declaration a
     /// module of another package than `module`'s keeps private (§6 rule
     /// 9), if it is one.

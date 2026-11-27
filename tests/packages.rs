@@ -363,3 +363,36 @@ fn fetch_failures_are_reported_plainly() {
     assert!(err.starts_with(&format!("checkers: could not fetch `util` from {}/nowhere: fatal: ", w.root.display())), "{err}");
     assert_eq!(err.lines().count(), 1, "{err}");
 }
+
+/// A runtime error in another package's private function names the function
+/// of that package the program called, however deep (SPEC §6 rule 9): the
+/// private `walk`, reached from `at` and from `first`, is named after each.
+#[test]
+fn a_runtime_error_names_the_function_the_program_called() {
+    let w = World::new("runtime");
+    w.write(
+        "lib/pick.ck",
+        "module pick\n\nexport fn at xs i -> x : xs~Array Int, i~Nat, i < len xs, x~Int\n    element xs i\n\n\
+         export fn first xs -> x : xs~Array Int, len xs > 0, x~Int\n    element xs 0\n\n\
+         fn element xs i -> x : xs~Array Int, i~Nat, i < len xs, x~Int\n    walk xs i 0\n\n\
+         fn walk xs i k -> x : xs~Array Int, i~Nat, k~Nat, k <= i, i < len xs, x~Int\n    decreasing i - k\n    if k == i then xs[i] else walk xs i (k + 1)\n",
+    );
+    // Each program calls one of them where its precondition fails, which
+    // only an `admit` says holds, so the index is checked at run time; the
+    // first also calls `first` on an array where it holds.
+    let program = |elems: &str, call: &str| {
+        format!(
+            "module p\n\nimport std.system (System, ExitCode)\nimport std.terminal\nimport std.string (debug)\nimport std.array\nimport lib.pick\n\n\
+             lemma assumed xs : xs~Array Int\n    ensures len xs > 5\n    proof\n        admit\n\n\
+             export fn main args sys -> code : args~List String, sys~System, code~ExitCode\n    let xs = array.from_list {elems}\n    have assumed xs\n    terminal.print_line (debug ({call})) sys.term\n    Success\n"
+        )
+    };
+    for (elems, call, error) in [
+        ("[1, 2]", "pick.first xs + pick.at xs 5", "runtime error in `at`: index 5 out of bounds for an array of 2 elements\n"),
+        ("[]", "pick.first xs", "runtime error in `first`: index 0 out of bounds for an array of 0 elements\n"),
+    ] {
+        w.write("prog/p.ck", &program(elems, call));
+        let out = ckc(&w, "prog", &["run", "--package", "lib=../lib", "--uses", ".=lib", "p.ck"]);
+        assert_eq!((out.status.code(), text(&out.stderr)), (Some(70), error.to_string()), "{call}");
+    }
+}
