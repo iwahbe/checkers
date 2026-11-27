@@ -77,20 +77,91 @@ impl Elab {
         NEVER_KNOWN.iter().any(|(m, n)| *info.module == **m && *info.name == **n)
     }
 
-    /// Whether function value `v` captured a value that holds an effect.
-    /// Only a bound local can be one (a value refers to no other local), so
-    /// `v` is looked into only if a bound local in scope holds an effect:
-    /// quoting it writes out the values of the locals it refers to, which
-    /// in a chain of `let`s of closures grow with the chain.
-    fn captures_effect(&self, cx: &Cx, v: &Val) -> bool {
-        let lvl = cx.lvl();
-        if !cx.bound().any(|l| self.holds_effect(lvl, &cx.ty_of(l))) {
-            return false;
-        }
-        let t = quote(&self.g, lvl, v);
+    /// Whether the value of `t`, a term over `cx` (a function), captured a
+    /// value that holds an effect: whether a bound local it refers to holds
+    /// one. Only a bound local can be one: a value refers to no other local.
+    fn captures_effect(&self, cx: &Cx, t: &Tm) -> bool {
+        let (refers, _) = self.term_refers(cx.lvl(), t, &|l| self.local_refers(cx, l));
+        self.any_holds_effect(cx, &refers)
+    }
+
+    /// Whether one of the bound locals `ls` holds an effect.
+    fn any_holds_effect(&self, cx: &Cx, ls: &[usize]) -> bool {
+        ls.iter().any(|&l| self.holds_effect(cx.lvl(), &cx.ty_of(l)))
+    }
+
+    /// The bound locals, by level, outermost first, that the value of `t`,
+    /// a term over the first `depth` locals, refers to: those `t` mentions,
+    /// and those each local it mentions refers to (`refers`). A solved
+    /// unknown is replaced by its solution first; one not yet solved refers
+    /// to every bound local it is given. With whether `t` has one.
+    ///
+    /// Not its value's free variables: the values of the locals it refers
+    /// to are not written out (in a chain of `let`s of closures, they grow
+    /// with the chain), and what evaluating `t` would leave out (a branch
+    /// not taken) is counted.
+    fn term_refers(&self, depth: usize, t: &Tm, refers: &dyn Fn(usize) -> Rc<[usize]>) -> (Rc<[usize]>, bool) {
+        let t = crate::core::zonk_metas(&self.g, depth, t);
         let mut free = std::collections::BTreeSet::new();
         free_vars(&t, 0, &mut free);
-        free.into_iter().any(|i| i < lvl && self.holds_effect(lvl, &cx.ty_of(lvl - 1 - i)))
+        let mut sets = free.into_iter().filter_map(|i| depth.checked_sub(1 + i)).map(refers).filter(|r| !r.is_empty());
+        let all = match (sets.next(), sets.next()) {
+            (None, _) => Rc::from([]),
+            (Some(r), None) => r,
+            (Some(a), Some(b)) => {
+                let mut all: std::collections::BTreeSet<usize> = a.iter().chain(b.iter()).copied().collect();
+                for r in sets {
+                    all.extend(r.iter());
+                }
+                all.into_iter().collect()
+            }
+        };
+        (all, super::has_meta(&t))
+    }
+
+    /// The bound locals, by level, outermost first, that local `l`'s value
+    /// refers to: `l`, if it is bound; else those of the term that defined
+    /// it (`term_refers`), decided once its unknowns are solved.
+    fn local_refers(&self, cx: &Cx, l: usize) -> Rc<[usize]> {
+        // Each local undecided that `l`'s term reaches, lowest first: one's
+        // term mentions only locals before it, decided by then. A loop, not
+        // recursion, however long the chain of locals.
+        let mut todo = vec![l];
+        let mut undecided = std::collections::BTreeSet::new();
+        while let Some(m) = todo.pop() {
+            let local = &cx.locals[m];
+            if local.bound || local.refers.get().is_some() || !undecided.insert(m) {
+                continue;
+            }
+            if let Some(t) = &local.def {
+                let mut free = std::collections::BTreeSet::new();
+                free_vars(t, 0, &mut free);
+                todo.extend(free.into_iter().filter_map(|i| m.checked_sub(1 + i)));
+            }
+        }
+        // Decided here, but with an unknown not yet solved: not kept.
+        let mut fresh: HashMap<usize, Rc<[usize]>> = HashMap::new();
+        let decided = |fresh: &HashMap<usize, Rc<[usize]>>, m: usize| -> Option<Rc<[usize]>> {
+            let local = &cx.locals[m];
+            if local.bound {
+                return Some(Rc::from([m]));
+            }
+            local.refers.get().or_else(|| fresh.get(&m)).cloned()
+        };
+        for m in undecided {
+            let refers = |j: usize| decided(&fresh, j).unwrap_or_else(|| self.local_refers(cx, j));
+            let (r, unsolved) = match &cx.locals[m].def {
+                Some(t) => self.term_refers(m, t, &refers),
+                // Defined by a value alone.
+                None => self.term_refers(m, &quote(&self.g, m, &cx.env[m]), &refers),
+            };
+            if unsolved {
+                fresh.insert(m, r);
+            } else {
+                let _ = cx.locals[m].refers.set(r);
+            }
+        }
+        decided(&fresh, l).expect("decided above")
     }
 
     /// Whether `t`, a call with all its arguments, of type `ty`, has effects.
@@ -104,14 +175,14 @@ impl Elab {
         }
         let lvl = cx.lvl();
         let (mut fty, local) = match h {
-            Tm::Def(d) => (eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty), false),
+            Tm::Def(d) => (eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty), None),
             Tm::Var(i) => {
                 let l = lvl.checked_sub(i + 1)?;
-                (cx.ty_of(l), true)
+                (cx.ty_of(l), Some(l))
             }
             _ => return None,
         };
-        let mut effects = local && self.captures_effect(cx, &self.eval(cx, h));
+        let mut effects = local.is_some_and(|l| self.any_holds_effect(cx, &self.local_refers(cx, l)));
         let mut given = Vec::new();
         for a in &args {
             let Val::Pi(_, m, icit, dom, clo) = self.force(&fty) else { return None };
@@ -119,14 +190,14 @@ impl Elab {
             if icit == Icit::Expl && m != Mult::Zero {
                 effects = effects
                     || match self.force(&dom) {
-                        Val::Pi(..) => self.captures_effect(cx, &v),
+                        Val::Pi(..) => self.captures_effect(cx, a),
                         _ => self.holds_effect(lvl, &dom),
                     };
                 given.push((*dom).clone());
             }
             fty = apply_closure(&self.g, &clo, v);
         }
-        effects.then_some(Effects { given: (!local).then_some(given) })
+        effects.then_some(Effects { given: local.is_none().then_some(given) })
     }
 
     /// `t`, a call with all its arguments, of type `ty`: wrapped in
