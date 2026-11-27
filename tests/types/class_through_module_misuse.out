@@ -1,0 +1,15 @@
+error[E0287]: a dictionary of class `Sized` is built only by an instance
+ --> class_through_module_misuse.ck:9:13
+  |
+9 |     let d = sized.Sized
+  |             ^^^^^^^^^^^
+  = help: declare `instance Sized …`; its functions' bodies and lemmas' proofs are checked there
+
+error[E0291]: `sized.Sized.Part` needs the type it is for
+  --> class_through_module_misuse.ck:12:28
+   |
+12 | fn without_type p -> n : p~sized.Sized.Part, n~Int
+   |                            ^^^^^^^^^^^^^^^^ each instance of `Sized` gives its own `Part`
+   = help: write `sized.Sized.Part t` for the type `t`, e.g. `sized.Sized.Part a` under a clause `sized.Sized a`
+
+class_through_module_misuse.ck: 2 errors, 0 warnings

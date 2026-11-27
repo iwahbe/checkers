@@ -942,10 +942,39 @@ impl Elab {
         while let ExprKind::App(g, _) = &f.kind {
             f = g;
         }
-        let ExprKind::Con(n) = &f.kind else { return None };
-        match self.resolve(n, true) {
+        self.class_named(f, None)
+    }
+
+    /// The class `e` names: `C`, or `m.C` through an import's qualifier
+    /// `m`, as `m.T` names a type. In an expression (`cx`), a local named
+    /// `m` hides the qualifier.
+    pub fn class_named(&self, e: &Expr, cx: Option<&Cx>) -> Option<TyId> {
+        let sym = match &e.kind {
+            ExprKind::Con(n) => self.resolve(n, true),
+            ExprKind::Field(q, n) => match &q.kind {
+                ExprKind::Var(q) if cx.is_none_or(|cx| cx.lookup(q).is_none()) => self.resolve_qualified(&self.qualifier(q)?, &n.name, true),
+                _ => None,
+            },
+            _ => None,
+        };
+        match sym {
             Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => Some(t),
             _ => None,
+        }
+    }
+
+    /// Index a use of the class `tid` written as `e` (`C` or `m.C`).
+    pub fn index_class(&mut self, e: &Expr, tid: TyId) {
+        match &e.kind {
+            ExprKind::Field(x, n) => {
+                if let ExprKind::Var(q) = &x.kind {
+                    if let Some(m) = self.qualifier(q) {
+                        self.index_module(x.span, &m);
+                    }
+                }
+                self.index_sym(n.span, Sym::Ty(tid));
+            }
+            _ => self.index_sym(e.span, Sym::Ty(tid)),
         }
     }
 
@@ -1574,7 +1603,7 @@ impl Elab {
         }
         match &f.kind {
             ExprKind::Con(n) if args > 0 => local.contains_key(n) || self.class_clause(e).is_some(),
-            _ => false,
+            _ => args > 0 && self.class_clause(e).is_some(),
         }
     }
 
@@ -3500,12 +3529,33 @@ impl Elab {
     pub fn check_dict_con(&mut self, c: ConId, span: Span) {
         let tid = self.g.cons[c.0 as usize].ty;
         if self.class_defs.contains_key(&tid) && !self.cur_fn.is_some_and(|d| self.dict_defs.contains(&d)) {
-            let name = self.class_defs[&tid].name.clone();
-            self.err(
-                Diagnostic::error("E0287", format!("a dictionary of class `{name}` is built only by an instance"), span)
-                    .with_help(format!("declare `instance {name} …`; its functions' bodies and lemmas' proofs are checked there")),
-            );
+            self.dict_built_error(tid, span);
         }
+    }
+
+    /// A name used as a value, `C` or `m.C`: a class there is its
+    /// dictionary, which only its instances build (E0287). Whether it was
+    /// a class, reported.
+    pub fn class_as_value(&mut self, s: Sym, type_pos: bool, span: Span) -> bool {
+        match s {
+            Sym::Con(c) => {
+                self.check_dict_con(c, span);
+                false
+            }
+            Sym::Ty(t) if !type_pos && self.class_defs.contains_key(&t) => {
+                self.dict_built_error(t, span);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn dict_built_error(&mut self, tid: TyId, span: Span) {
+        let name = self.class_defs[&tid].name.clone();
+        self.err(
+            Diagnostic::error("E0287", format!("a dictionary of class `{name}` is built only by an instance"), span)
+                .with_help(format!("declare `instance {name} …`; its functions' bodies and lemmas' proofs are checked there")),
+        );
     }
 
     /// An implicit parameter being given a meta: if it is a dictionary,
