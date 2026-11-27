@@ -311,6 +311,15 @@ impl Elab {
             self.known_cache.borrow_mut().insert(key, None);
             return None;
         }
+        // Kept from an earlier build, if nothing it can run has changed.
+        let disk = crate::verify::cache_dir().map(|_| self.known_disk.borrow_mut().key(&self.g, t, ty));
+        if let Some(v) = disk.as_ref().and_then(|d| self.known_disk.borrow_mut().recall(&self.g, d)) {
+            self.known_cache.borrow_mut().insert(key, Some(v.clone()));
+            return Some(v);
+        }
+        if std::env::var_os("CHECKERS_KNOWN_TRACE").is_some() {
+            eprintln!("known value computed: {}", crate::core::show(&self.g, &[], t));
+        }
         let ev = ev.get_or_insert_with(|| crate::native::eval::Evaluator::plain(&self.g));
         let k = match ev.eval_limited(t, work) {
             Ok(v) => {
@@ -325,6 +334,9 @@ impl Elab {
             // A runtime error: not known.
             Err(_) => None,
         };
+        if let (Some(d), Some(v)) = (&disk, &k) {
+            self.known_disk.borrow_mut().store(&self.g, d, v);
+        }
         self.known_cache.borrow_mut().insert(key, k.clone());
         k
     }

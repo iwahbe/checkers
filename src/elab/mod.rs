@@ -726,6 +726,8 @@ pub struct Elab {
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
     /// Values known at compile time, by term (`known_value`).
     pub known_cache: std::cell::RefCell<HashMap<String, Option<Tm>>>,
+    /// Known values kept across builds (§8.9): their keys and storage.
+    pub known_disk: std::cell::RefCell<crate::known_cache::KnownCache>,
     /// Definitions found to run at compile time (`runnable`).
     pub runnable_defs: std::cell::RefCell<HashSet<DefId>>,
     /// What was proved before the proofs phase, so that a module's own
@@ -1076,6 +1078,7 @@ impl Elab {
             alias_preds: HashMap::new(),
             bounds: HashMap::new(),
             known_cache: std::cell::RefCell::new(HashMap::new()),
+            known_disk: std::cell::RefCell::new(Default::default()),
             runnable_defs: std::cell::RefCell::new(HashSet::new()),
             early: Default::default(),
             module_proofs: std::cell::RefCell::new(HashMap::new()),
