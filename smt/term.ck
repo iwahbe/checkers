@@ -1676,6 +1676,14 @@ lemma axioms_ok_sig c xs : c~Context, xs~List Axiom, axioms_in_sig c.sig xs
             []        -> auto
             _ :: rest -> have axioms_ok_sig c rest
 
+# Each axiom of a list of well-sorted ones is well-sorted.
+export lemma axiom_listed c xs a : c~Context, xs~List Axiom, a~Axiom, axioms_ok c xs, list.contains xs a
+    ensures axiom_ok c a
+    proof
+        match xs
+            []        -> auto
+            x :: rest -> if x == a then auto else have axiom_listed c rest a
+
 # Every axiom of a context has a `Bool` body in it.
 export lemma axioms_well_sorted c : c~Context
     ensures axioms_ok c (axioms c)
@@ -2791,6 +2799,56 @@ export lemma defs_in_signature c : c~Context
     ensures defs_declared (signature c).funs (defs c)
     proof
         have defs_in_declared empty_sig c.commands
+
+# ── Boolean structure ────────────────────────────────────────────────────────
+# How a term is built from Boolean connectives, seen through `let`: a
+# connective under a `let` is the connective of its parts, each under the
+# same `let` (`under`). The certificate checker (`smt.cert`) reads clauses
+# off it; `smt.model` says what it means (`model.and_meaning` and the rest).
+
+# The outermost connective of a term, and its parts.
+export enum Connective
+    # Not a connective (or one this doesn't look into).
+    Atom
+    # `true` or `false`.
+    ConstOf b     : b~Bool
+    # `(not a)`.
+    NotOf a       : a~Term
+    # `(and p …)`, at least one part.
+    AndOf ps      : ps~List Term
+    # `(or p …)`, at least one part.
+    OrOf ps       : ps~List Term
+    # `(=> a b)`.
+    ImpliesOf a b : a~Term, b~Term
+    # `(ite p a b)`.
+    IteOf p a b   : p~Term, a~Term, b~Term
+    # `(= a b)`; a connective only where `a` and `b` are `Bool`s.
+    IffOf a b     : a~Term, b~Term
+
+export transparent fn structure t -> s : t~Term, s~Connective
+    match t
+        App (Boolean b) []        -> ConstOf b
+        App (Prim Not) [a]        -> NotOf a
+        App (Prim And) (p :: ps)  -> AndOf (p :: ps)
+        App (Prim Or) (p :: ps)   -> OrOf (p :: ps)
+        App (Prim Implies) [a, b] -> ImpliesOf a b
+        App (Prim Ite) [p, a, b]  -> IteOf p a b
+        App (Prim Eq) [a, b]      -> IffOf a b
+        Let binds body            -> under binds (structure body)
+        _                         -> Atom
+
+# A shape's parts, each under the `let` binding `binds`. A constant under a
+# `let` is left an atom.
+export transparent fn under binds s -> r : binds~List (Name, Term), s~Connective, r~Connective
+    match s
+        Atom          -> Atom
+        ConstOf _     -> Atom
+        NotOf a       -> NotOf (Let binds a)
+        AndOf ps      -> AndOf (list.map (\p -> Let binds p) ps)
+        OrOf ps       -> OrOf (list.map (\p -> Let binds p) ps)
+        ImpliesOf a b -> ImpliesOf (Let binds a) (Let binds b)
+        IteOf p a b   -> IteOf (Let binds p) (Let binds a) (Let binds b)
+        IffOf a b     -> IffOf (Let binds a) (Let binds b)
 
 # ── What `sort_of` and `apply_sort` give, by form ────────────────────────────
 # Their bodies are sealed outside this module, so each case is stated here

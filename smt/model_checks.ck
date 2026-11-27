@@ -399,7 +399,26 @@ lemma decided c m t : c~Context, m~Model, t~Term, term.sort_of (term.signature c
     ensures model.holds c m t or model.fails c m t
     proof
         have model.total_has_value c m t Bool
-        have model.has_value_bool c m t
+        have model.two_valued c m t
+
+# Both ways between `boolean` and the sort: a `Bool` sort gives `boolean`,
+# and a `boolean` term meets `total_has_value`'s premise.
+lemma boolean_of_sort c t : c~Context, t~Term, term.sort_of (term.signature c) [] t == Ok Bool
+    ensures model.boolean c t
+
+lemma sort_of_boolean c t : c~Context, t~Term, model.boolean c t
+    ensures term.sort_of (term.signature c) [] t == Ok Bool
+
+lemma boolean_defined c m t : c~Context, m~Model, t~Term, model.boolean c t,
+                              total: forall r : r~model.Read, model.gives c m r,
+                              arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value,
+                              j2~Value, x2~Value, vs2~List Value,
+                              ss2~List Sort, xs2~Sort, body2~Term,
+                              model.arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures model.holds c m t or model.fails c m t
+    proof
+        have model.total_has_value c m t Bool
+        have model.two_valued c m t
 
 lemma well_sorted c t s : c~Context, t~Term, s~Sort, term.sort_of (term.signature c) [] t == Ok s
     ensures term.sort_ok (term.signature c) 0 s

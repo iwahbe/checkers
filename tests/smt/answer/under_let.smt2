@@ -1,0 +1,6 @@
+(set-logic ALL)
+(declare-const p Bool)
+(declare-const q Bool)
+(assert (let ((a p)) (and a q)))
+(assert (not (let ((a p)) q)))
+(check-sat)
