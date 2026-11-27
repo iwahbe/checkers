@@ -350,7 +350,7 @@ export fn apply_sort sig h found -> r : sig~Sig, h~Head, found~List Sort, r~Resu
                 None   -> bad
 
 # The sort a built-in operation gives for arguments of sorts `found`.
-fn prim_sort op found -> r : op~Op, found~List Sort, r~Option Sort
+export transparent fn prim_sort op found -> r : op~Op, found~List Sort, r~Option Sort
     match op
         Not        -> if found == [Bool] then Some Bool else None
         And        -> if list.length found >= 2 and list.all (\s -> s == Bool) found then Some Bool else None
@@ -407,7 +407,7 @@ fn prim_sort op found -> r : op~Op, found~List Sort, r~Option Sort
                 [Seq e, i, n] if i == Int and n == Int -> Some (Seq e)
                 _ -> None
 
-fn int2 found r -> s : found~List Sort, r~Sort, s~Option Sort
+export transparent fn int2 found r -> s : found~List Sort, r~Sort, s~Option Sort
     if found == [Int, Int] then Some r else None
 
 # The sort of `t` in `sig`, where `env` gives the sorts of the bound
@@ -2849,3 +2849,121 @@ export transparent fn under binds s -> r : binds~List (Name, Term), s~Connective
         ImpliesOf a b -> ImpliesOf (Let binds a) (Let binds b)
         IteOf p a b   -> IteOf (Let binds p) (Let binds a) (Let binds b)
         IffOf a b     -> IffOf (Let binds a) (Let binds b)
+
+# ── What `sort_of` and `apply_sort` give, by form ────────────────────────────
+# Their bodies are sealed outside this module, so each case is stated here
+# as an equation: exactly what the function gives for a term of that form,
+# or a head of that kind. Proved from the definitions.
+
+# The terms a `let` binds, in order.
+export transparent fn bind_terms binds -> ts : binds~List (Name, Term), ts~List Term
+    match binds
+        []             -> []
+        (_, t) :: rest -> t :: bind_terms rest
+
+lemma bound_sorts_terms sig env binds : sig~Sig, env~List Sort, binds~List (Name, Term)
+    ensures bound_sorts sig env binds == sorts_of sig env (bind_terms binds)
+    proof
+        match binds
+            []             -> auto
+            (_, _) :: rest -> have bound_sorts_terms sig env rest
+
+export lemma sort_of_var sig env i : sig~Sig, env~List Sort, i~Nat
+    ensures sort_of sig env (Var i)
+        == match list.head (list.drop i env)
+            Some s -> Ok s
+            None   -> Err (Unbound i)
+
+export lemma sort_of_app sig env h args : sig~Sig, env~List Sort, h~Head, args~List Term
+    ensures sort_of sig env (App h args)
+        == match sorts_of sig env args
+            Ok found -> apply_sort sig h found
+            Err e    -> Err e
+
+export lemma sort_of_let sig env binds body : sig~Sig, env~List Sort, binds~List (Name, Term), body~Term
+    ensures sort_of sig env (Let binds body)
+        == match binds
+            [] -> Err EmptyLet
+            _  ->
+                match sorts_of sig env (bind_terms binds)
+                    Ok ss -> sort_of sig (list.reverse ss ++ env) body
+                    Err e -> Err e
+    proof
+        have bound_sorts_terms sig env binds
+
+export lemma sort_of_lam sig env x s body : sig~Sig, env~List Sort, x~Name, s~Sort, body~Term
+    ensures sort_of sig env (Lam x s body)
+        == match sort_ok sig 0 s
+            False -> Err (BadSort s)
+            True  ->
+                match sort_of sig (s :: env) body
+                    Ok b  -> Ok (Arr s b)
+                    Err e -> Err e
+
+export lemma sorts_of_nil sig env : sig~Sig, env~List Sort
+    ensures sorts_of sig env [] == Ok []
+
+export lemma sorts_of_cons sig env t ts : sig~Sig, env~List Sort, t~Term, ts~List Term
+    ensures sorts_of sig env (t :: ts)
+        == match sort_of sig env t
+            Ok s  ->
+                match sorts_of sig env ts
+                    Ok ss -> Ok (s :: ss)
+                    Err e -> Err e
+            Err e -> Err e
+
+export lemma apply_fun sig f found : sig~Sig, f~Nat, found~List Sort
+    ensures apply_sort sig (Fun f) found
+        == if f < len sig.funs and sig.funs[f].params == found then Ok sig.funs[f].result else Err (BadApply (Fun f) found)
+
+export lemma apply_con sig d k args found : sig~Sig, d~Nat, k~Nat, args~List Sort, found~List Sort
+    ensures apply_sort sig (Con d k args) found
+        == match ctor sig d k
+            Some c ->
+                if sort_ok sig 0 (Data d args) and list.map (instantiate args) (field_sorts c.fields) == found
+                    Ok (Data d args)
+                else
+                    Err (BadApply (Con d k args) found)
+            None   -> Err (BadApply (Con d k args) found)
+
+export lemma apply_is sig d k found : sig~Sig, d~Nat, k~Nat, found~List Sort
+    ensures apply_sort sig (Is d k) found
+        == match (ctor sig d k, found)
+            (Some _, [Data e _]) -> if e == d then Ok Bool else Err (BadApply (Is d k) found)
+            _                    -> Err (BadApply (Is d k) found)
+
+export lemma apply_sel sig d k j found : sig~Sig, d~Nat, k~Nat, j~Nat, found~List Sort
+    ensures apply_sort sig (Sel d k j) found
+        == match (ctor sig d k, found)
+            (Some c, [Data e args]) ->
+                if e == d
+                    match list.head (list.drop j c.fields)
+                        Some f -> Ok (instantiate args f.sort)
+                        None   -> Err (BadApply (Sel d k j) found)
+                else
+                    Err (BadApply (Sel d k j) found)
+            _                       -> Err (BadApply (Sel d k j) found)
+
+export lemma apply_num sig n found : sig~Sig, n~Nat, found~List Sort
+    ensures apply_sort sig (Num n) found == if found == [] then Ok Int else Err (BadApply (Num n) found)
+
+export lemma apply_boolean sig b found : sig~Sig, b~Bool, found~List Sort
+    ensures apply_sort sig (Boolean b) found == if found == [] then Ok Bool else Err (BadApply (Boolean b) found)
+
+export lemma apply_const_arr sig s found : sig~Sig, s~Sort, found~List Sort
+    ensures apply_sort sig (ConstArr s) found
+        == match s
+            Arr _ v -> if sort_ok sig 0 s and found == [v] then Ok s else Err (BadApply (ConstArr s) found)
+            _       -> Err (BadApply (ConstArr s) found)
+
+export lemma apply_empty_seq sig s found : sig~Sig, s~Sort, found~List Sort
+    ensures apply_sort sig (EmptySeq s) found
+        == match s
+            Seq _ -> if sort_ok sig 0 s and found == [] then Ok s else Err (BadApply (EmptySeq s) found)
+            _     -> Err (BadApply (EmptySeq s) found)
+
+export lemma apply_prim sig op found : sig~Sig, op~Op, found~List Sort
+    ensures apply_sort sig (Prim op) found
+        == match prim_sort op found
+            Some s -> Ok s
+            None   -> Err (BadApply (Prim op) found)
