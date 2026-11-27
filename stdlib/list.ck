@@ -23,6 +23,26 @@ export transparent fn all p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a,
         []        -> True
         x :: rest -> p x and all p rest
 
+# Whether `p` holds for some element (`False` for an empty list). `p` is
+# called only with elements of `xs`, so it may assume `contains xs x`:
+#
+# ```
+# check any (\x -> x > 2) [1, 2, 3]
+# check not (any (\x -> x > 2) [])
+# ```
+export transparent fn any p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a, r~Bool
+    match xs
+        []        -> False
+        x :: rest -> p x or any p rest
+
+# `p` holds for some element exactly when it doesn't fail for every one.
+export lemma any_all p xs : p~(x~a -> Bool, contains xs x), xs~List a
+    ensures any p xs == not (all (\x -> not (p x)) xs)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have any_all p rest
+
 # The elements in reverse order.
 export transparent fn reverse xs -> ys : xs~List a, ys~List a
     reverse_onto xs []
