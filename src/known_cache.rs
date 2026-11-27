@@ -28,6 +28,15 @@ enum Item {
     Ty(u32),
 }
 
+/// Definitions and constructors by name, for reading a stored value, and
+/// how many definitions and types there were when it was built.
+struct ByName {
+    defs_len: usize,
+    tys_len: usize,
+    defs: HashMap<String, u32>,
+    cons: HashMap<String, u32>,
+}
+
 /// Names and digests, worked out once per program.
 #[derive(Default)]
 pub struct KnownCache {
@@ -37,7 +46,7 @@ pub struct KnownCache {
     items: HashMap<Item, (String, Vec<Item>)>,
     /// From names back to numbers, for reading a stored value: built when
     /// first needed, again if more have been declared since.
-    by_name: Option<(usize, usize, HashMap<String, u32>, HashMap<String, u32>)>,
+    by_name: Option<ByName>,
 }
 
 /// Where known values are kept, if anywhere.
@@ -55,7 +64,7 @@ fn hex(b: &[u8]) -> String {
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    (s.len() % 2 == 0).then_some(())?;
+    s.len().is_multiple_of(2).then_some(())?;
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
@@ -269,12 +278,12 @@ impl KnownCache {
         let text = std::fs::read_to_string(dir()?.join(key)).ok()?;
         let mut lines = text.lines();
         (lines.next()? == HEADER).then_some(())?;
-        if self.by_name.as_ref().is_none_or(|(d, t, _, _)| *d != g.defs.len() || *t != g.tys.len()) {
+        if self.by_name.as_ref().is_none_or(|b| b.defs_len != g.defs.len() || b.tys_len != g.tys.len()) {
             let defs = (0..g.defs.len() as u32).map(|d| (self.def_name(g, d), d)).collect();
             let cons = (0..g.cons.len() as u32).map(|c| (self.con_name(g, c), c)).collect();
-            self.by_name = Some((g.defs.len(), g.tys.len(), defs, cons));
+            self.by_name = Some(ByName { defs_len: g.defs.len(), tys_len: g.tys.len(), defs, cons });
         }
-        let (_, _, defs, cons) = self.by_name.as_ref()?;
+        let ByName { defs, cons, .. } = self.by_name.as_ref()?;
         let mut b = Builder::default();
         let mut ids: Vec<u32> = Vec::new();
         for l in lines {
