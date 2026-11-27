@@ -98,6 +98,23 @@ export lemma take_drop n xs : n~Nat, xs~List a
                     0 -> auto
                     _ -> have take_drop (n - 1) rest
 
+# Dropping at most `length xs` elements from `xs ++ ys` drops them from `xs`.
+export lemma drop_append_within n xs ys : n~Nat, xs~List a, ys~List a, n <= length xs
+    ensures drop n (xs ++ ys) == drop n xs ++ ys
+    proof
+        match xs
+            []        -> auto
+            _ :: rest ->
+                match n
+                    0 -> auto
+                    _ -> have drop_append_within (n - 1) rest ys
+
+# Dropping all of `xs` from `xs ++ ys` leaves `ys`.
+export lemma drop_append xs ys : xs~List a, ys~List a
+    ensures drop (length xs) (xs ++ ys) == ys
+    proof
+        have drop_append_within (length xs) xs ys
+
 # The elements of `xs ++ ys` are those of `xs` and those of `ys`.
 export lemma bag_append xs ys : xs~List a, ys~List a
     ensures bag.of (xs ++ ys) == bag.sum (bag.of xs) (bag.of ys)
@@ -220,6 +237,17 @@ export transparent fn head xs -> r : xs~List a, r~Option a
     match xs
         []     -> None
         x :: _ -> Some x
+
+# `drop i xs` has a first element exactly when `i` is a position in `xs`.
+export lemma head_drop i xs : i~Nat, xs~List a
+    ensures (head (drop i xs) != None) == (i < length xs)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest ->
+                match i
+                    0 -> auto
+                    _ -> have head_drop (i - 1) rest
 
 # Moving an element to the front keeps the same elements.
 export lemma perm_middle xs y ys : xs~List a, y~a, ys~List a

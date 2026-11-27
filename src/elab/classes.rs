@@ -3955,18 +3955,13 @@ impl Elab {
     /// Whether `t` has a refinement alias where `b`, the same type at the
     /// alias's base, doesn't, at a place a value is produced (`co`) or
     /// consumed: a type of a value given to the caller is produced where
-    /// it is covariant.
-    /// However deep: a worklist.
+    /// it is covariant. However deep: a worklist.
     fn alias_differs(&self, lvl: usize, t: &Val, b: &Val, co: bool) -> bool {
         let mut work = vec![(lvl, t.clone(), b.clone(), co)];
         while let Some((lvl, t, b, co)) = work.pop() {
             let (pt, pb) = (self.peel(&t), self.peel(&b));
-            if co {
-                if let Some((d, _)) = self.refined_alias(&pt) {
-                    if self.refined_alias(&pb).is_none_or(|(e, _)| e != d) {
-                        return true;
-                    }
-                }
+            if co && self.refined_alias(&pt).is_some() && !self.same_refinement(lvl, &pt, &pb) {
+                return true;
             }
             match (self.force(&pt), self.force(&pb)) {
                 (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
@@ -4009,7 +4004,7 @@ impl Elab {
         }
         let (pt, pb) = (self.peel(t), self.peel(b));
         if let Some((d, args)) = self.refined_alias(&pt) {
-            if self.refined_alias(&pb).is_none_or(|(e, _)| e != d) {
+            if !self.same_refinement(lvl, &pt, &pb) {
                 let vv = eval(&self.g, &crate::core::Env::from(env.to_vec()), v);
                 let preds = self.alias_preds.get(&d).cloned().unwrap_or_default();
                 // The predicates at this use's arguments where they are
@@ -4127,7 +4122,7 @@ impl Elab {
     #[allow(clippy::type_complexity)]
     pub(super) fn alias_goals_pub(&self, env: &[Val], v: &Tm, t: &Val, b: &Val) -> Option<Vec<(Tm, String, DefId, bool)>> {
         let goals = self.alias_goals(env, env.len(), v, t, b, None, &mut Vec::new()).ok()?;
-        let inside = !self.alias_at_top(t, b);
+        let inside = !self.alias_at_top(env.len(), t, b);
         goals
             .into_iter()
             .map(|g| match g {
@@ -4140,9 +4135,9 @@ impl Elab {
     /// Whether `t`, unlike `b`, has a refinement alias at its top: the
     /// goals `alias_goals` gives are then about the value itself, else
     /// about values inside it.
-    fn alias_at_top(&self, t: &Val, b: &Val) -> bool {
+    fn alias_at_top(&self, lvl: usize, t: &Val, b: &Val) -> bool {
         let (pt, pb) = (self.peel(t), self.peel(b));
-        self.refined_alias(&pt).is_some_and(|(d, _)| self.refined_alias(&pb).is_none_or(|(e, _)| e != d))
+        self.refined_alias(&pt).is_some() && !self.same_refinement(lvl, &pt, &pb)
     }
 
     /// `v` of type `t` (`b` at the alias's base) as a part `alias_goals`
@@ -4336,7 +4331,7 @@ impl Elab {
         let (inst_params, inst_result) = self.inst_param_types(ad.members.get(&member).copied(), &args_t);
         // Its result.
         let env = cx.env.to_vec();
-        let top = self.alias_at_top(&ty_t, &ty_b);
+        let top = self.alias_at_top(lvl, &ty_t, &ty_b);
         let goals = match self.alias_goals(&env, lvl, &value, &ty_t, &ty_b, inst_result.as_ref(), &mut Vec::new()) {
             Ok(goals) => goals,
             Err(_) => vec![AliasGoal::Part { t: None, b: None, inst: None, each: None, inside: false }],
