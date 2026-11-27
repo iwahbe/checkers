@@ -99,6 +99,9 @@ pub struct FnMeta {
     pub builtin: bool,
     /// The result's name, if it has one (`-> y`).
     pub result: Option<String>,
+    /// The result is declared `own` (`-> k : k~own (Unit -> Unit)`): the
+    /// caller uses it exactly once (§8.4).
+    pub result_own: bool,
 }
 
 impl FnMeta {
@@ -2052,6 +2055,106 @@ impl Elab {
         matches!(t, Tm::Univ(_))
     }
 
+    /// Could a value of this type hold a value that must be used exactly
+    /// once: a resource, or a closure, which may be one that uses a resource
+    /// (§8.4)? A type variable or a type not yet computed could.
+    pub fn may_hold_once(&self, v: &Val) -> bool {
+        self.val_linear(v) || self.val_holds_fn(v)
+    }
+
+    /// A type written with free variables, evaluated with each unknown.
+    pub fn eval_open(&self, t: &Tm) -> Val {
+        let mut fv = std::collections::BTreeSet::new();
+        crate::core::free_vars(t, 0, &mut fv);
+        let n = fv.iter().next_back().map_or(0, |m| m + 1);
+        let env: Vec<Val> = (0..n).map(|k| Val::var(usize::MAX / 4 + k)).collect();
+        eval(&self.g, &crate::core::Env::from(env), t)
+    }
+
+    /// Could a value of this type hold a function? However deep: a
+    /// worklist over the type's arguments.
+    fn val_holds_fn(&self, v: &Val) -> bool {
+        let mut work = vec![v.clone()];
+        while let Some(v) = work.pop() {
+            match self.force(&v) {
+                Val::Pi(..) => return true,
+                Val::TyCon(id, args) => {
+                    if self.is_owner(id) {
+                        continue;
+                    }
+                    if self.ty_holds_fn(id, &mut Vec::new()) {
+                        return true;
+                    }
+                    work.extend(args.iter().enumerate().filter(|(k, _)| self.type_param(id, *k)).map(|(_, a)| a.clone()));
+                }
+                Val::TupleTy(ts) => work.extend(ts.iter().cloned()),
+                // A type variable, or a type not computed yet.
+                Val::Neutral(Head::Var(_) | Head::Meta(_), _) => return true,
+                Val::Neutral(Head::Def(d), _) => {
+                    if self.def_gives_type(d) {
+                        return true;
+                    }
+                }
+                Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Does a field of `id`, whatever its arguments, hold a function?
+    fn ty_holds_fn(&self, id: TyId, visiting: &mut Vec<TyId>) -> bool {
+        if self.is_owner(id) || visiting.contains(&id) {
+            return false;
+        }
+        visiting.push(id);
+        let r = self.g.tys[id.0 as usize]
+            .ctors
+            .iter()
+            .flat_map(|c| self.g.cons[c.0 as usize].fields.iter())
+            .any(|f| f.1 != Mult::Zero && self.field_holds_fn(&f.3, visiting));
+        visiting.pop();
+        r
+    }
+
+    /// A field's type, in the context of the parameters and earlier fields:
+    /// a parameter is decided by its argument.
+    fn field_holds_fn(&self, t: &Tm, visiting: &mut Vec<TyId>) -> bool {
+        if let Some((id, args)) = tycon_app(t) {
+            return !self.is_owner(id) && (self.ty_holds_fn(id, visiting) || args.iter().any(|a| self.field_holds_fn(a, visiting)));
+        }
+        match t {
+            Tm::Pi(..) => true,
+            Tm::TupleTy(ts) => ts.iter().any(|a| self.field_holds_fn(a, visiting)),
+            Tm::Meta(m) => self.g.meta(*m).is_none_or(|v| self.val_holds_fn(&v)),
+            Tm::Var(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => false,
+            _ if !self.computes_type(t) => false,
+            // Computed: known if closed, else it may be anything.
+            _ => {
+                let mut fv = std::collections::BTreeSet::new();
+                crate::core::free_vars(t, 0, &mut fv);
+                !fv.is_empty() || self.val_holds_fn(&eval(&self.g, &crate::core::Env::new(), t))
+            }
+        }
+    }
+
+    /// The types of a constructor's fields, given the arguments of its type
+    /// (unknown where `args` is `None`): earlier fields are unknown.
+    pub fn con_field_types(&self, cid: ConId, args: Option<&[Val]>) -> Vec<(Mult, Val)> {
+        let ci = &self.g.cons[cid.0 as usize];
+        let np = self.g.arity_ty(ci.ty);
+        let mut env: Vec<Val> = match args {
+            Some(a) => a.to_vec(),
+            None => (0..np).map(|k| Val::var(usize::MAX / 4 + k)).collect(),
+        };
+        let mut out = Vec::new();
+        for (k, f) in ci.fields.iter().enumerate() {
+            out.push((f.1, eval(&self.g, &crate::core::Env::from(env.clone()), &f.3)));
+            env.push(Val::var(usize::MAX / 2 + k));
+        }
+        out
+    }
+
     /// A binder's name, recorded with where it is bound (#672 d).
     pub fn binder_name(&mut self, name: &str, span: Span) -> Name {
         let n: Name = Rc::from(name);
@@ -2130,9 +2233,10 @@ impl Elab {
                     .with_label("this `own` can go")
                     .with_help("remove `own`; a resource is used exactly once anyway"),
             );
-        } else if !matches!(ty, Tm::Pi(..)) && !self.mentions_type_var(cx, ty, 0) {
+        } else if !matches!(ty, Tm::Pi(..)) && !self.mentions_type_var(cx, ty, 0) && !self.may_hold_once(&self.eval(cx, ty)) {
             // A function may be a closure that uses a resource, which is
-            // called exactly once (#658): `f~own (Unit -> a)` takes one.
+            // called exactly once (#658): `f~own (Unit -> a)` takes one, and
+            // `o~own Option (Unit -> a)` one in a value (§8.4).
             let tyv = self.eval(cx, ty);
             let shown = self.show_val(cx, &tyv);
             self.err(

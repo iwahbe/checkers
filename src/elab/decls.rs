@@ -2204,7 +2204,15 @@ impl Elab {
             self.bind_implied(&mut cx, &mut binders, &mut inner, e);
         }
         let result_ty = match result.and_then(|r| Self::typed_constraint(cs, &r.name)) {
-            Some((e, _)) => self.elab_type(&mut cx, e),
+            Some((e, m)) => {
+                let ty = self.elab_type(&mut cx, e);
+                // A result declared `own` is used exactly once by the caller
+                // (§8.4): a one-shot closure, or a value holding one.
+                if Self::mult_of(m) == Mult::One {
+                    self.check_own(&cx, &ty, e.span);
+                }
+                ty
+            }
             // Not written: the same type at every call, so it may mention the
             // type parameters but not the values (`fib (x - 1) + fib (x - 2)`).
             None => self.fresh_meta_over_types(&cx),
@@ -2524,6 +2532,10 @@ impl Elab {
                             inner: sig.inner.clone(),
                             builtin,
                             result: result.as_ref().map(|r| r.name.clone()),
+                            result_own: result
+                                .as_ref()
+                                .and_then(|r| Self::typed_constraint(constraints, &r.name))
+                                .is_some_and(|(_, m)| m == ast::Mult::Own),
                         },
                     );
                     self.specs.insert(
