@@ -375,39 +375,37 @@ impl Elab {
                 return Some(Gained { expected: e, found: f, variance: pol, via, cx: cx.clone() });
             }
         }
-        if depth > 0 && (self.refined_alias(&e).is_some() || self.refined_alias(&f).is_some()) {
-            if !self.same_refinement(cx.lvl(), &e, &f) {
-                let role = if pol == Variance::Contra && matches!(via, Via::Fn) {
-                    WeakenRole::Param
-                } else if in_result {
-                    WeakenRole::Result
+        if depth > 0 && (self.refined_alias(&e).is_some() || self.refined_alias(&f).is_some()) && !self.same_refinement(cx.lvl(), &e, &f) {
+            let role = if pol == Variance::Contra && matches!(via, Via::Fn) {
+                WeakenRole::Param
+            } else if in_result {
+                WeakenRole::Result
+            } else {
+                WeakenRole::Element
+            };
+            // (sub, sup): every `sub` must be a `sup`.
+            let pairs: Vec<(&Val, &Val)> = match pol {
+                Variance::Co => vec![(&f, &e)],
+                Variance::Contra => vec![(&e, &f)],
+                Variance::Inv => vec![(&f, &e), (&e, &f)],
+            };
+            for (sub, sup) in pairs {
+                // A `sub` whose alias `sup` refines further (`Nat` under
+                // `Small`) is its base, as an unrefined type is (#609).
+                // A class's type with a base type has its predicates
+                // (#360): a refinement too.
+                let sub_ref = (self.refined_alias(sub).is_some() || self.based_class_type(sub)) && !self.refines(cx.lvl(), sup, sub);
+                let sup_ref = self.refined_alias(sup).is_some();
+                if !sup_ref {
+                    continue;
+                }
+                if sub_ref || role == WeakenRole::Param {
+                    self.weaken_obligation(cx, sub, sup, role, w);
                 } else {
-                    WeakenRole::Element
-                };
-                // (sub, sup): every `sub` must be a `sup`.
-                let pairs: Vec<(&Val, &Val)> = match pol {
-                    Variance::Co => vec![(&f, &e)],
-                    Variance::Contra => vec![(&e, &f)],
-                    Variance::Inv => vec![(&f, &e), (&e, &f)],
-                };
-                for (sub, sup) in pairs {
-                    // A `sub` whose alias `sup` refines further (`Nat` under
-                    // `Small`) is its base, as an unrefined type is (#609).
-                    // A class's type with a base type has its predicates
-                    // (#360): a refinement too.
-                    let sub_ref = (self.refined_alias(sub).is_some() || self.based_class_type(sub)) && !self.refines(cx.lvl(), sup, sub);
-                    let sup_ref = self.refined_alias(sup).is_some();
-                    if !sup_ref {
-                        continue;
-                    }
-                    if sub_ref || role == WeakenRole::Param {
-                        self.weaken_obligation(cx, sub, sup, role, w);
-                    } else {
-                        // A class's type is shown as written (`Seq.Elem s`),
-                        // not as its dictionary's field.
-                        let f = if self.g.reads_type_field(&f) { found.clone() } else { f.clone() };
-                        return Some(Gained { expected: e.clone(), found: f, variance: pol, via, cx: cx.clone() });
-                    }
+                    // A class's type is shown as written (`Seq.Elem s`),
+                    // not as its dictionary's field.
+                    let f = if self.g.reads_type_field(&f) { found.clone() } else { f.clone() };
+                    return Some(Gained { expected: e.clone(), found: f, variance: pol, via, cx: cx.clone() });
                 }
             }
         }

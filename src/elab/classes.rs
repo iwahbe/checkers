@@ -3947,10 +3947,8 @@ impl Elab {
             return false;
         }
         let (pt, pb) = (self.peel(t), self.peel(b));
-        if co {
-            if self.refined_alias(&pt).is_some() && !self.same_refinement(lvl, &pt, &pb) {
-                return true;
-            }
+        if co && self.refined_alias(&pt).is_some() && !self.same_refinement(lvl, &pt, &pb) {
+            return true;
         }
         match (self.force(&pt), self.force(&pb)) {
             (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
