@@ -62,10 +62,10 @@ error[E0401]: this drops the result of `opened`, declared `own`
    = help: bind it to a name, then use it
 
 error[E0401]: the result of `opened` is declared `own`, so it must be used exactly once, but `opened_passed` passes it to `many`
-  --> oneshot_holder.ck:67:4
+  --> oneshot_holder.ck:68:11
    |
-67 | fn opened_passed path fs -> r : path~String, fs~Fs, r~Unit
-   |    ^^^^^^^^^^^^^
+68 |     many (opened path fs)
+   |           ^^^^^^^^^^^^^^
    = note: the parameter of `many` is not `own`, so `many` may use it any number of times, or never
    = help: mark that parameter of `many` with `own` (as in `f~own (Unit -> a)`)
 

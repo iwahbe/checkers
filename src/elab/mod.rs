@@ -1373,7 +1373,7 @@ impl Elab {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
         for lvl in cx.bound() {
-            t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
+            t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many, crate::core::Pos::NONE);
         }
         t
     }
@@ -1385,7 +1385,7 @@ impl Elab {
         let mut t = Tm::Meta(m);
         for lvl in cx.bound() {
             if self.is_type_level(&cx.locals[lvl].ty) {
-                t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
+                t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many, crate::core::Pos::NONE);
             }
         }
         t
@@ -2753,11 +2753,11 @@ impl Elab {
             Tm::PrimApp(Prim::When, _) => false,
             Tm::Pi(_, _, _, a, b) => go(a, depth) && go(b, depth + 1),
             Tm::Lam(_, _, _, b) => go(b, depth + 1),
-            Tm::App(f, a, _, m) => go(f, depth) && (*m == Mult::Zero || go(a, depth)),
+            Tm::App(f, a, _, m, _) => go(f, depth) && (*m == Mult::Zero || go(a, depth)),
             Tm::Let(_, _, _, v, b) => go(v, depth) && go(b, depth + 1),
             Tm::TyConApp(_, v) | Tm::TupleTy(v) => v.iter().all(|x| go(x, depth)),
             Tm::ConApp(_, v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().all(|x| go(x, depth)),
-            Tm::Proj(x, _, _) | Tm::Field(x, _, _) => go(x, depth),
+            Tm::Proj(x, _, _) | Tm::Field(x, _, _, _) => go(x, depth),
             Tm::Case(s, c) => {
                 go(s, depth)
                     && c.branches.iter().all(|(_, n, b)| go(b, depth + n))
@@ -3193,7 +3193,7 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
         Tm::Known(k) => k.any_con(|c| con(&c)),
         Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => go(a) || go(b),
         Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) => go(b),
-        Tm::Field(b, c, _) => con(c) || go(b),
+        Tm::Field(b, c, _, _) => con(c) || go(b),
         Tm::Let(_, _, a, b, c) => go(a) || go(b) || go(c),
         Tm::TyConApp(ty, v) => tys.contains(ty) || v.iter().any(go),
         Tm::ConApp(c, v) => con(c) || v.iter().any(go),

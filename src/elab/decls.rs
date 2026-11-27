@@ -792,7 +792,7 @@ impl Elab {
             self.report_main(wrong, at, None);
             return value;
         }
-        let arg = |t: Tm, k: usize| Tm::App(Rc::new(t), Rc::new(Tm::Var(1 - k)), Icit::Expl, mults[k]);
+        let arg = |t: Tm, k: usize| Tm::App(Rc::new(t), Rc::new(Tm::Var(1 - k)), Icit::Expl, mults[k], crate::core::Pos::NONE);
         let body = arg(arg(value, 0), 1);
         params.iter().zip(&mults).rev().fold(body, |b, ((x, _), m)| Tm::Lam(x.clone(), *m, Icit::Expl, Rc::new(b)))
     }
@@ -3061,7 +3061,7 @@ fn mult_params(t: &Tm, mults: &[Mult]) -> Tm {
 fn pred_subject(p: &Tm) -> Vec<(DefId, usize, usize, usize)> {
     let mut h = p;
     let mut expl = Vec::new();
-    while let Tm::App(f, a, i, _) = h {
+    while let Tm::App(f, a, i, _, _) = h {
         if *i == Icit::Expl {
             expl.push(&**a);
         }

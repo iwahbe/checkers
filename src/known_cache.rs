@@ -865,7 +865,7 @@ impl KnownCache {
                 }
                 self.write_tm(g, b, out)?;
             }
-            Tm::App(f, a, i, m) => {
+            Tm::App(f, a, i, m, _) => {
                 for s in ["A", icit(*i), mult(*m)] {
                     tok(out, s);
                 }
@@ -891,7 +891,7 @@ impl KnownCache {
                 tok(out, &format!("J{i}{}", if *rest { "r" } else { "" }));
                 self.write_tm(g, x, out)?;
             }
-            Tm::Field(x, c, i) => {
+            Tm::Field(x, c, i, _) => {
                 tok(out, &format!("F{i}"));
                 tok(out, &self.con_name(g, c.0));
                 self.write_tm(g, x, out)?;
@@ -983,7 +983,7 @@ impl KnownCache {
             "A" => {
                 let (i, m) = (icit(toks.next()?)?, mult(toks.next()?)?);
                 let f = self.read_tm(g, toks)?;
-                Tm::App(Rc::new(f), Rc::new(self.read_tm(g, toks)?), i, m)
+                Tm::App(Rc::new(f), Rc::new(self.read_tm(g, toks)?), i, m, crate::core::Pos::NONE)
             }
             "E" => {
                 let (x, m) = (unescape(toks.next()?), mult(toks.next()?)?);
@@ -1011,7 +1011,7 @@ impl KnownCache {
                     }
                     "F" => {
                         let c = con(self, toks.next()?)?;
-                        Tm::Field(Rc::new(self.read_tm(g, toks)?), c, count(rest)?)
+                        Tm::Field(Rc::new(self.read_tm(g, toks)?), c, count(rest)?, crate::core::Pos::NONE)
                     }
                     "TA" => {
                         let x = ty(self, toks.next()?)?;

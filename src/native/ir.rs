@@ -206,7 +206,7 @@ impl<'g> Compiler<'g> {
                 }
                 let mut known = Vec::new();
                 let mut h = t;
-                while let Tm::App(f, a, _, m) = h {
+                while let Tm::App(f, a, _, m, _) = h {
                     known.push((self.know(a), *m));
                     h = f;
                 }
@@ -220,7 +220,7 @@ impl<'g> Compiler<'g> {
                 // A variable bound to a known function, called: the
                 // function, called directly.
                 if let Some((_, f)) = super::spec::known_var(h) {
-                    let call = spine.iter().fold((*f).clone(), |c, (a, m)| Tm::App(Rc::new(c), (*a).clone(), Icit::Expl, *m));
+                    let call = spine.iter().fold((*f).clone(), |c, (a, m)| Tm::App(Rc::new(c), (*a).clone(), Icit::Expl, *m, crate::core::Pos::NONE));
                     return self.go(&call);
                 }
                 // Code of another definition applied (a lambda's body put
@@ -240,7 +240,7 @@ impl<'g> Compiler<'g> {
                 if let Tm::Lam(x, m, _, b) = h {
                     let mut body = (**b).clone();
                     for (a, am) in &spine[1..] {
-                        body = Tm::App(Rc::new(body), Rc::new(crate::core::rename_free(a, 0, &|v| v + 1)), Icit::Expl, *am);
+                        body = Tm::App(Rc::new(body), Rc::new(crate::core::rename_free(a, 0, &|v| v + 1)), Icit::Expl, *am, crate::core::Pos::NONE);
                     }
                     let (a, am) = spine[0];
                     let m = if *m == Mult::Zero || am == Mult::Zero { Mult::Zero } else { *m };
@@ -340,7 +340,7 @@ impl<'g> Compiler<'g> {
             Tm::Known(k) => self.known(k),
             Tm::Tuple(xs) => Ir::Tuple(xs.iter().map(|x| self.compile(x)).collect()),
             Tm::Proj(x, i, rest) => Ir::Proj(self.compile(x), *i, *rest),
-            Tm::Field(x, c, i) => match self.g.unboxed_field(*c) {
+            Tm::Field(x, c, i, _) => match self.g.unboxed_field(*c) {
                 Some(k) if k == *i => self.go(x),
                 Some(_) => Ir::Erased,
                 None => Ir::Field(self.compile(x), *i),
@@ -676,7 +676,7 @@ pub fn known_instance(g: &Globals, t: &Tm) -> Option<Tm> {
     let wk = &g.well_known;
     let mut spine = Vec::new();
     let mut h = t;
-    while let Tm::App(f, a, i, m) = h {
+    while let Tm::App(f, a, i, m, _) = h {
         spine.push((a.clone(), *i, *m));
         h = f;
     }
@@ -698,12 +698,12 @@ pub fn known_instance(g: &Globals, t: &Tm) -> Option<Tm> {
     }
     let mut read = Vec::new();
     let mut r = body;
-    while let Tm::App(g, a, i, m) = r {
+    while let Tm::App(g, a, i, m, _) = r {
         read.push((a.clone(), *i, *m));
         r = g;
     }
     read.reverse();
-    let Tm::Field(x, con, field) = r else { return None };
+    let Tm::Field(x, con, field, _) = r else { return None };
     let Tm::Var(j) = **x else { return None };
     if j >= k {
         return None;
@@ -777,7 +777,7 @@ pub fn known_instance(g: &Globals, t: &Tm) -> Option<Tm> {
         let (a, _, _) = args.next()?;
         out = subst(b, &[(*a).clone()], 0);
     }
-    Some(args.fold(out, |f, (a, i, m)| Tm::App(Rc::new(f), a, i, m)))
+    Some(args.fold(out, |f, (a, i, m)| Tm::App(Rc::new(f), a, i, m, crate::core::Pos::NONE)))
 }
 
 /// A term that computes nothing: a variable, a literal, or a constant whose

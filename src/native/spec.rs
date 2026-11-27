@@ -264,7 +264,7 @@ pub fn small(t: &Tm) -> bool {
 fn mark(t: &Tm, owner: Option<DefId>) -> Tm {
     match t {
         Tm::Lam(..) => mark_body(t, owner),
-        Tm::App(f, a, i, m) => Tm::App(Rc::new(mark(f, owner)), Rc::new(mark(a, owner)), *i, *m),
+        Tm::App(f, a, i, m, at) => Tm::App(Rc::new(mark(f, owner)), Rc::new(mark(a, owner)), *i, *m, *at),
         _ => t.clone(),
     }
 }
@@ -306,7 +306,7 @@ pub fn known_fn(g: &Globals, staged: Option<&crate::stage::Staged>, t: &Tm) -> b
     }
     let mut args = Vec::new();
     let mut h = t;
-    while let Tm::App(f, a, _, m) = h {
+    while let Tm::App(f, a, _, m, _) = h {
         args.push((a, *m));
         h = f;
     }
@@ -485,7 +485,7 @@ fn settle(g: &Globals, cx: SpecCx, t: &Tm) -> Tm {
         Tm::App(..) => {
             let mut args = Vec::new();
             let mut h = t;
-            while let Tm::App(f, a, i, m) = h {
+            while let Tm::App(f, a, i, m, _) = h {
                 args.push((a, *i, *m));
                 h = f;
             }
@@ -502,7 +502,7 @@ fn settle(g: &Globals, cx: SpecCx, t: &Tm) -> Tm {
                     _ if known_var(a).is_some() => (***a).clone(),
                     _ => settle(g, cx, a),
                 };
-                Tm::App(Rc::new(c), Rc::new(a), *i, *m)
+                Tm::App(Rc::new(c), Rc::new(a), *i, *m, crate::core::Pos::NONE)
             })
         }
         _ if known_var(t).is_some() => t.clone(),
@@ -518,7 +518,7 @@ fn used_as_value(g: &Globals, staged: Option<&crate::stage::Staged>, t: &Tm, v: 
         Tm::App(..) => {
             let mut args = Vec::new();
             let mut h = t;
-            while let Tm::App(f, a, _, m) = h {
+            while let Tm::App(f, a, _, m, _) = h {
                 args.push((a, *m));
                 h = f;
             }

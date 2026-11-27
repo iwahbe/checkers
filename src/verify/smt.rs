@@ -1381,7 +1381,7 @@ impl<'a> Builder<'a> {
             Tm::Univ(_) => out("a universe"),
             // A class's type read from a dictionary in scope (`$d.$Unit`, as
             // its functions' fields have it): the sort of `C.Name t`.
-            Tm::Field(x, c, i) if self.e.g.is_type_field(*c, *i) => match &**x {
+            Tm::Field(x, c, i, _) if self.e.g.is_type_field(*c, *i) => match &**x {
                 Tm::Var(l) => match self.resolve(env, *l)? {
                     Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.dict_field_sort(*c, *i, &sargs)),
                     _ => out("a class's type at a dictionary it can't name"),
@@ -1945,7 +1945,7 @@ impl<'a> Builder<'a> {
         let g = &self.e.g;
         let d = g.defs.iter().position(|d| &*d.module == "std.prelude" && &*d.name == "valid_utf8")?;
         let env = vec![Ent::Term(t.to_string(), Sort::Seq(Box::new(Sort::Int)))];
-        let tm = Tm::App(Rc::new(Tm::Def(DefId(d as u32))), Rc::new(Tm::Var(0)), crate::core::Icit::Expl, Mult::Many);
+        let tm = Tm::App(Rc::new(Tm::Def(DefId(d as u32))), Rc::new(Tm::Var(0)), crate::core::Icit::Expl, Mult::Many, crate::core::Pos::NONE);
         match self.term(&env, &tm) {
             Ok((ft, Sort::Bool)) => Some(ft),
             _ => None,
@@ -2574,7 +2574,7 @@ impl<'a> Builder<'a> {
                     _ => out("a projection from a non-tuple"),
                 }
             }
-            Tm::Field(x, c, i) => {
+            Tm::Field(x, c, i, _) => {
                 // A field of a value built here (a known instance's
                 // dictionary): the value given for it.
                 if !matches!(self.e.g.cons[c.0 as usize].fields[*i].3, Tm::Pi(..)) {
@@ -2700,7 +2700,7 @@ impl<'a> Builder<'a> {
             Tm::App(..) => {
                 let mut args = Vec::new();
                 let mut h = x;
-                while let Tm::App(f, a, _, _) = h {
+                while let Tm::App(f, a, _, _, _) = h {
                     args.push(a);
                     h = f;
                 }
@@ -2773,7 +2773,7 @@ impl<'a> Builder<'a> {
     fn app(&mut self, env: &[Ent], t: &Tm) -> Tx<(String, Sort)> {
         let mut args: Vec<(Tm, Mult)> = Vec::new();
         let mut h = t;
-        while let Tm::App(f, a, _, m) = h {
+        while let Tm::App(f, a, _, m, _) = h {
             args.push(((**a).clone(), *m));
             h = f;
         }
@@ -2796,11 +2796,11 @@ impl<'a> Builder<'a> {
             // A function from a value built here (a known instance's
             // dictionary, `Seq.size` at `Seq (Array Int)`): that function
             // applied, without building the value.
-            Tm::Field(x, c, i) if self.built_field(x, *c, *i).is_some() => {
+            Tm::Field(x, c, i, _) if self.built_field(x, *c, *i).is_some() => {
                 let mut app = self.built_field(x, *c, *i).unwrap();
                 for (a, m) in args {
                     let icit = if m == Mult::Zero { crate::core::Icit::Impl } else { crate::core::Icit::Expl };
-                    app = Tm::App(Rc::new(app), Rc::new(a), icit, m);
+                    app = Tm::App(Rc::new(app), Rc::new(a), icit, m, crate::core::Pos::NONE);
                 }
                 self.term(env, &app)
             }
@@ -3040,7 +3040,7 @@ impl<'a> Builder<'a> {
             let mut app = crate::stage::shift(&body, rest, 0);
             for k in 0..rest {
                 inner.push(Ent::Term(names[used + k].clone(), ps[used + k].clone()));
-                app = Tm::App(Rc::new(app), Rc::new(Tm::Var(rest - 1 - k)), crate::core::Icit::Expl, Mult::Many);
+                app = Tm::App(Rc::new(app), Rc::new(Tm::Var(rest - 1 - k)), crate::core::Icit::Expl, Mult::Many, crate::core::Pos::NONE);
             }
             body = app;
         } else if matches!(body, Tm::Lam(..)) {
@@ -3092,7 +3092,7 @@ impl<'a> Builder<'a> {
             while let Tm::App(f, ..) = r {
                 r = f;
             }
-            if let Tm::Field(x, _, _) = r {
+            if let Tm::Field(x, _, _, _) = r {
                 if let Tm::Var(j) = **x {
                     if j < k {
                         return Some(k - 1 - j);
@@ -3249,7 +3249,7 @@ impl<'a> Builder<'a> {
         ienv.extend(rest);
         let mut app = crate::stage::shift(&field, n, 0);
         for j in 0..n {
-            app = Tm::App(Rc::new(app), Rc::new(Tm::Var(n - 1 - j)), crate::core::Icit::Expl, Mult::Many);
+            app = Tm::App(Rc::new(app), Rc::new(Tm::Var(n - 1 - j)), crate::core::Icit::Expl, Mult::Many, crate::core::Pos::NONE);
         }
         let _ = args;
         self.term(&ienv, &app).map(Some)
@@ -4218,7 +4218,7 @@ impl<'a> Builder<'a> {
                 let mut body = crate::stage::shift(body, n - taken, 0);
                 for (j, (_, m)) in args.iter().enumerate().skip(taken) {
                     let i = if *m == Mult::Zero { crate::core::Icit::Impl } else { crate::core::Icit::Expl };
-                    body = Tm::App(Rc::new(body), Rc::new(Tm::Var(n - 1 - j)), i, *m);
+                    body = Tm::App(Rc::new(body), Rc::new(Tm::Var(n - 1 - j)), i, *m, crate::core::Pos::NONE);
                 }
                 self.term(&inner, &body)
             }
@@ -4243,7 +4243,7 @@ impl<'a> Builder<'a> {
                 }
                 let mut app = f.clone();
                 for (t, m) in tms {
-                    app = Tm::App(Rc::new(app), Rc::new(t), crate::core::Icit::Expl, m);
+                    app = Tm::App(Rc::new(app), Rc::new(t), crate::core::Icit::Expl, m, crate::core::Pos::NONE);
                 }
                 self.term(&inner, &app)
             }
@@ -4789,7 +4789,7 @@ impl<'a> Builder<'a> {
 fn dict_over_vars(t: &Tm) -> Option<(Tm, usize)> {
     let mut apps = Vec::new();
     let mut h = t;
-    while let Tm::App(f, _, i, m) = h {
+    while let Tm::App(f, _, i, m, _) = h {
         apps.push((*i, *m));
         h = f;
     }
@@ -4800,7 +4800,7 @@ fn dict_over_vars(t: &Tm) -> Option<(Tm, usize)> {
     let n = apps.len();
     let mut out_ = h.clone();
     for (j, (i, m)) in apps.into_iter().enumerate() {
-        out_ = Tm::App(Rc::new(out_), Rc::new(Tm::Var(n - 1 - j)), i, m);
+        out_ = Tm::App(Rc::new(out_), Rc::new(Tm::Var(n - 1 - j)), i, m, crate::core::Pos::NONE);
     }
     Some((out_, n))
 }
@@ -4911,7 +4911,7 @@ fn tm_size(t: &Tm, cap: usize) -> usize {
                 stack.push(a);
                 stack.push(b);
             }
-            Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) | Tm::Field(b, _, _) => stack.push(b),
+            Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) | Tm::Field(b, _, _, _) => stack.push(b),
             Tm::Let(_, _, a, b, c) => {
                 stack.push(a);
                 stack.push(b);

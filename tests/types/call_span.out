@@ -1,0 +1,25 @@
+error[E0401]: the result of `give` is declared `own`, so it must be used exactly once, but `passed` passes it to `ignore`
+  --> call_span.ck:17:13
+   |
+17 |     ignore (give v)
+   |             ^^^^^^
+   = note: the parameter of `ignore` is not `own`, so `ignore` may use it any number of times, or never
+   = help: mark that parameter of `ignore` with `own` (as in `f~own (Unit -> a)`)
+
+error[E0401]: `returned` returns the result of `give`, declared `own`, so it must be used exactly once
+  --> call_span.ck:21:5
+   |
+21 |     give v
+   |     ^^^^^^
+   = note: `returned`'s result isn't declared `own`, so its caller may use it any number of times, or never
+   = help: declare the result `own` (`r~own …`), so that the caller uses it exactly once, as it would a resource
+
+error[E0405]: `f` holds a resource (`File`), which can't be put in a cown
+  --> call_span.ck:25:5
+   |
+25 |     cown.new f s
+   |     ^^^^^^^^^^^^
+   = note: `f` is passed to `cown.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed
+   = help: keep the resource with one owner, passing it on through calls, `fork` and `join`; a cown may hold the rest of the state
+
+call_span.ck: 3 errors, 0 warnings

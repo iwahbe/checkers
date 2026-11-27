@@ -488,12 +488,13 @@ fn stage_module(c: &mut Checked, e: &elab::Elab, user: &str) {
         return;
     }
     let (staged, errs) = stage::stage_program(&e.g);
-    for (d, why) in errs {
+    for (d, at, why) in errs {
         let info = &e.g.defs[d.0 as usize];
         if *info.module != *user {
             continue;
         }
-        let span = e.fn_meta.get(&d).map(|m| m.span).unwrap_or_default();
+        // At the call that failed, else at the function's name.
+        let span = at.or_else(|| e.fn_meta.get(&d).map(|m| m.span)).unwrap_or_default();
         let dg = diag::Diagnostic::error("E0273", format!("compile-time evaluation failed in `{}`", info.name), span).with_note(why);
         route(c, e, user, user, dg);
     }

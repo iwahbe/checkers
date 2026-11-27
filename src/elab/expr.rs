@@ -64,7 +64,7 @@ impl Elab {
                         }
                     }
                     args.push(mv.clone());
-                    t = Tm::App(Rc::new(t), Rc::new(mt), Icit::Impl, m);
+                    t = Tm::App(Rc::new(t), Rc::new(mt), Icit::Impl, m, crate::core::Pos::new(span));
                     ty = apply_closure(&self.g, &c, mv);
                 }
                 _ => {
@@ -892,7 +892,7 @@ impl Elab {
             self.in_spec -= 1;
             cx.type_pos = saved;
             let av = self.eval(cx, &at);
-            t = Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m);
+            t = Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m, crate::core::Pos::new(span.to(arg.span)));
             ty = apply_closure(&self.g, &c, av);
         }
         self.name_span = span;
@@ -1097,8 +1097,8 @@ impl Elab {
                 }
             }
             self.name_span = head_name_span;
-            let (t2, ty2) = self.apply_one_as(cx, t, ty, a, expected, elem, ready.remove(&k));
-            if let (Some((dom, own, metas)), Tm::App(_, at, Icit::Expl, _)) = (join, &t2) {
+            let (t2, ty2) = self.apply_one_as(cx, t, ty, head.span, a, expected, elem, ready.remove(&k));
+            if let (Some((dom, own, metas)), Tm::App(_, at, Icit::Expl, ..)) = (join, &t2) {
                 joins.push(JoinArg { span: a.span, dom, own, tm: (**at).clone(), metas });
             }
             self.use_ctx = None;
@@ -2023,10 +2023,10 @@ impl Elab {
         (inner, extra)
     }
 
-    fn apply_rest(&mut self, cx: &mut Cx, r: (Tm, Val), args: &[&Expr], _span: Span) -> (Tm, Val) {
+    fn apply_rest(&mut self, cx: &mut Cx, r: (Tm, Val), args: &[&Expr], span: Span) -> (Tm, Val) {
         let (mut t, mut ty) = r;
         for a in args {
-            let (t2, ty2) = self.apply_one(cx, t, ty, a);
+            let (t2, ty2) = self.apply_one(cx, t, ty, span, a);
             t = t2;
             ty = ty2;
         }
@@ -2154,8 +2154,8 @@ impl Elab {
         (t, self.last_checked.take())
     }
 
-    pub fn apply_one(&mut self, cx: &mut Cx, t: Tm, ty: Val, a: &Expr) -> (Tm, Val) {
-        self.apply_one_as(cx, t, ty, a, None, None, None)
+    pub fn apply_one(&mut self, cx: &mut Cx, t: Tm, ty: Val, from: Span, a: &Expr) -> (Tm, Val) {
+        self.apply_one_as(cx, t, ty, from, a, None, None, None)
     }
 
     /// The type a parameter whose refinements mention later parameters
@@ -2233,6 +2233,7 @@ impl Elab {
         cx: &mut Cx,
         t: Tm,
         ty: Val,
+        from: Span,
         a: &Expr,
         expected: Option<Val>,
         elem: Option<ElemSub>,
@@ -2242,7 +2243,7 @@ impl Elab {
         match self.force(&ty) {
             Val::Pi(_, m, Icit::Expl, dom, c) => {
                 if let Some((at, av)) = ready {
-                    return (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m), apply_closure(&self.g, &c, av));
+                    return (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m, crate::core::Pos::new(from.to(a.span))), apply_closure(&self.g, &c, av));
                 }
                 let dom = expected.unwrap_or((*dom).clone());
                 // A refined function type's precondition (#580): required to
@@ -2272,9 +2273,9 @@ impl Elab {
                         self.oblige(cx, a.span, ObKind::Pre { callee: callee.clone() }, p.text.clone(), goal, None);
                     }
                 }
-                (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m), apply_closure(&self.g, &c, av))
+                (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m, crate::core::Pos::new(from.to(a.span))), apply_closure(&self.g, &c, av))
             }
-            Val::Neutral(Head::Meta(_), _) if self.default_if_numeric(&ty) => self.apply_one(cx, t, ty, a),
+            Val::Neutral(Head::Meta(_), _) if self.default_if_numeric(&ty) => self.apply_one(cx, t, ty, from, a),
             Val::Neutral(Head::Meta(_), sp) => {
                 // Refine `?m sp` to `(x~?d sp) -> ?c sp x`. The new metas take the
                 // same spine as `?m`, so the solution stays in `?m`'s scope.
@@ -2291,12 +2292,12 @@ impl Elab {
                 let mut cod = Tm::Meta(c);
                 for v in &args {
                     let vt = quote(&self.g, cx.lvl() + 1, v);
-                    cod = Tm::App(Rc::new(cod), Rc::new(vt), Icit::Expl, Mult::Many);
+                    cod = Tm::App(Rc::new(cod), Rc::new(vt), Icit::Expl, Mult::Many, crate::core::Pos::NONE);
                 }
-                cod = Tm::App(Rc::new(cod), Rc::new(Tm::Var(0)), Icit::Expl, Mult::Many);
+                cod = Tm::App(Rc::new(cod), Rc::new(Tm::Var(0)), Icit::Expl, Mult::Many, crate::core::Pos::NONE);
                 let pi = Val::Pi(Rc::from("x"), Mult::Many, Icit::Expl, Rc::new(dom.clone()), Closure { env: cx.env(), body: Rc::new(cod) });
                 self.unify_at(cx, &pi, &ty, a.span, "the function");
-                self.apply_one(cx, t, pi, a)
+                self.apply_one(cx, t, pi, from, a)
             }
             Val::Error => {
                 let _ = self.infer(cx, a);
@@ -2613,7 +2614,7 @@ impl Elab {
                 self.unify_at(cx, &dom, aty, span, "this operand");
                 let av = self.eval(cx, &a);
                 let ty = apply_closure(&self.g, &c, av);
-                (Tm::App(Rc::new(f), Rc::new(a), i, m), ty)
+                (Tm::App(Rc::new(f), Rc::new(a), i, m, crate::core::Pos::new(span)), ty)
             }
             _ => (Tm::Error, Val::Error),
         }
@@ -2847,7 +2848,7 @@ impl Elab {
                     env.push(crate::core::eval(
                         &self.g,
                         &crate::core::Env::from(vec![xv.clone()]),
-                        &Tm::Field(Rc::new(Tm::Var(0)), cid, j),
+                        &Tm::Field(Rc::new(Tm::Var(0)), cid, j, crate::core::Pos::NONE),
                     ));
                 }
                 // Reading a field uses the whole record: at runtime, it may
@@ -2883,7 +2884,7 @@ impl Elab {
                     }
                 }
                 let fty = ftys[idx].clone();
-                (Tm::Field(Rc::new(xt), cid, idx), fty)
+                (Tm::Field(Rc::new(xt), cid, idx, crate::core::Pos::new(span)), fty)
             }
             Val::Error => (Tm::Error, Val::Error),
             // Unknown because of an error already reported.

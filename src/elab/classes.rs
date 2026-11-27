@@ -2754,7 +2754,7 @@ impl Elab {
             // Under the parameters, parameter `i` is `Var(n - 1 - i)`.
             let dict = Tm::TyConApp(c.tid, (0..n).map(|i| Tm::Var(n - 1 - i)).collect());
             let mut ty = Tm::Pi(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(dict), Rc::new(Tm::Univ(0)));
-            let mut body = Tm::Lam(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(Tm::Field(Rc::new(Tm::Var(0)), con, k)));
+            let mut body = Tm::Lam(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(Tm::Field(Rc::new(Tm::Var(0)), con, k, crate::core::Pos::NONE)));
             for (p, kind) in c.params.iter().zip(&kinds).rev() {
                 ty = Tm::Pi(Rc::from(p.as_str()), Mult::Zero, Icit::Expl, Rc::new(kind.clone()), Rc::new(ty));
                 body = Tm::Lam(Rc::from(p.as_str()), Mult::Zero, Icit::Expl, Rc::new(body));
@@ -3096,7 +3096,7 @@ impl Elab {
         let Some(args) = bound.into_iter().collect::<Option<Vec<Val>>>() else { return Err("none".into()) };
         let mut t = Tm::Def(inst.def);
         for a in &args {
-            t = Tm::App(Rc::new(t), Rc::new(quote(&self.g, req.lvl, a)), Icit::Impl, Mult::Zero);
+            t = Tm::App(Rc::new(t), Rc::new(quote(&self.g, req.lvl, a)), Icit::Impl, Mult::Zero, crate::core::Pos::NONE);
         }
         // The dictionary's parameters so far, as values: the variables,
         // then the context's dictionaries.
@@ -3115,7 +3115,7 @@ impl Elab {
                 }
             };
             env.push(eval(&self.g, &lvl_env, &d));
-            t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many);
+            t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many, crate::core::Pos::NONE);
         }
         // Its head's types' clauses (#385), implied in its context: found
         // the same way, at the types asked for.
@@ -3123,7 +3123,7 @@ impl Elab {
             let Val::TyCon(c, ctys) = self.force(&eval(&self.g, &crate::core::Env::from(env.clone()), &ty)) else { return Err("none".into()) };
             let d = self.find_dict(req, c, &ctys, outer)?;
             env.push(eval(&self.g, &lvl_env, &d));
-            t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many);
+            t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many, crate::core::Pos::NONE);
         }
         // Its class's types are kept in the dictionary as descriptors, built
         // from the instance's types (#170): a use of the function building it.
@@ -3177,7 +3177,7 @@ impl Elab {
         let cd = self.class_defs.get(&self.g.cons[c.0 as usize].ty)?;
         let (_, _, field) = cd.clauses.iter().find(|(t, k, _)| *t == *i && *k == class)?;
         let base = Val::Neutral(h.clone(), Rc::new(sp[..sp.len() - 1].to_vec()));
-        Some(Tm::Field(Rc::new(quote(&self.g, lvl, &base)), *c, *field))
+        Some(Tm::Field(Rc::new(quote(&self.g, lvl, &base)), *c, *field, crate::core::Pos::NONE))
     }
 
     /// The instances a request still waiting could mean, as written
@@ -3930,7 +3930,7 @@ impl Elab {
             n += 1;
         }
         match b.head() {
-            Tm::Field(d, _, _) => match **d {
+            Tm::Field(d, _, _, _) => match **d {
                 Tm::Var(k) if k < n => Some(n - 1 - k),
                 _ => None,
             },
@@ -4211,7 +4211,7 @@ impl Elab {
                 Icit::Impl => (quote(&self.g, lvl, &a2[0]), a2[0].clone()),
                 Icit::Expl => (expl.next()?, Val::var(usize::MAX / 2)),
             };
-            call = Tm::App(Rc::new(call), Rc::new(a), icit, m);
+            call = Tm::App(Rc::new(call), Rc::new(a), icit, m, crate::core::Pos::NONE);
             ty = apply_closure(&self.g, &c, va);
         }
         if expl.next().is_some() {
@@ -4245,7 +4245,7 @@ impl Elab {
         let call_args: Option<Vec<(Val, Icit, Mult)>> = call.map(|(cx, t, _)| {
             let mut rev = Vec::new();
             let mut h: &Tm = t;
-            while let Tm::App(g, a, i, m) = h {
+            while let Tm::App(g, a, i, m, _) = h {
                 rev.push((self.eval(cx, a), *i, *m));
                 h = g;
             }
@@ -4287,7 +4287,7 @@ impl Elab {
         let lvl = cx.lvl();
         let mut value = Tm::Def(f);
         for (a, i, m) in &args_t {
-            value = Tm::App(Rc::new(value), Rc::new(quote(&self.g, lvl, a)), *i, *m);
+            value = Tm::App(Rc::new(value), Rc::new(quote(&self.g, lvl, a)), *i, *m, crate::core::Pos::NONE);
         }
         // Without a call: the class's preconditions hold of the arguments.
         if call.is_none() {
