@@ -789,7 +789,7 @@ impl Lowerer<'_, '_> {
         let name = self.p.names[self.p.specs.borrow().origin(d) as usize].clone();
         if std::env::var_os("CHECKERS_NATIVE_DUMP").is_some() {
             for (node, why) in &kept {
-                eprintln!("kept in {name}: {}: {}", crate::native::fold::describe(g, node), why.why());
+                eprintln!("kept in {name}: {}: {}", crate::native::fold::describe(g, Some(&self.p.specs.borrow()), node), why.why());
             }
         }
         if crate::native::fold::checking() {
@@ -802,11 +802,9 @@ impl Lowerer<'_, '_> {
         let name = self.p.names[self.p.specs.borrow().origin(d) as usize].clone();
         let mut found = Vec::new();
         crate::native::fold::residuals(self.g, ir, kept, &mut found);
-        for node in found {
-            self.p.residual.push(format!(
-                "internal error: `{name}` leaves {} to run, though every value it needs is known when compiling",
-                crate::native::fold::describe(self.g, node)
-            ));
+        let what: Vec<String> = found.iter().map(|node| crate::native::fold::describe(self.g, Some(&self.p.specs.borrow()), node)).collect();
+        for w in what {
+            self.p.residual.push(format!("internal error: `{name}` leaves {w} to run, though every value it needs is known when compiling"));
         }
     }
 
