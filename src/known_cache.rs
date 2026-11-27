@@ -1,5 +1,6 @@
 //! Known values kept across builds (§8.9), in `.checkers/known/` beside the
-//! checked file, as Z3's answers are (D100).
+//! checked file, as Z3's answers are (D100): those native code computes for
+//! the type checker, and those folding computes in native code.
 //!
 //! A value is stored under a key: a digest of the term computed, its type,
 //! the `ckc` executable, and every definition and type the computation can
@@ -10,6 +11,12 @@
 //! constructors are named by module and name, never by their numbers,
 //! which depend on the order modules load: a value is read back into
 //! another build's numbering, and isn't reused if a name it holds is gone.
+//!
+//! A cache reads one program's code (`Program`): the type checker's
+//! definitions, or native code's, with staged bodies and specialized
+//! copies. A copy has no definition of its own: it is named by the
+//! definition it copies and its body, which holds the known arguments put
+//! into it.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -17,6 +24,9 @@ use std::sync::Arc;
 
 use crate::core::{Globals, Lit, Tm};
 use crate::known::{Builder, Code, Known, Node, Value};
+use crate::native::ir::{Ir, Lit as IrLit};
+use crate::native::lower::{SNode, Static};
+use checkers_rt::word as w;
 
 const HEADER: &str = "checkers known 1";
 
@@ -37,13 +47,48 @@ struct ByName {
     cons: HashMap<String, u32>,
 }
 
-/// Names and digests, worked out once per program.
+/// The code a cache reads: the definitions, and for native code the bodies
+/// staging gave them and the copies specialization made.
+#[derive(Clone, Copy)]
+pub struct Program<'a> {
+    pub g: &'a Globals,
+    pub staged: Option<&'a crate::stage::Staged>,
+    pub specs: Option<&'a crate::native::spec::Specs>,
+}
+
+impl<'a> Program<'a> {
+    /// The type checker's definitions, as declared.
+    pub fn of(g: &'a Globals) -> Program<'a> {
+        Program { g, staged: None, specs: None }
+    }
+
+    /// The copy `d` is, if it is one.
+    fn copy(&self, d: u32) -> Option<&'a crate::native::spec::Copy> {
+        self.specs.and_then(|s| s.copy(d))
+    }
+
+    /// The staged definition `d` is, if it is one: its index and name.
+    fn extra(&self, d: u32) -> Option<(usize, &'a (String, Tm))> {
+        let i = (d as usize).checked_sub(self.g.defs.len())?;
+        self.staged.and_then(|s| s.extra.get(i)).map(|e| (i, e))
+    }
+
+    /// Whether `d` names a definition of this program.
+    fn has_def(&self, d: u32) -> bool {
+        (d as usize) < self.g.defs.len() || self.extra(d).is_some() || self.copy(d).is_some()
+    }
+}
+
+/// Names and digests, worked out once per program: a cache reads one
+/// program's code.
 #[derive(Default)]
 pub struct KnownCache {
     def_names: HashMap<u32, String>,
     ty_names: HashMap<u32, String>,
     /// Each item's digest and the items it mentions.
     items: HashMap<Item, (String, Vec<Item>)>,
+    /// A digest of each item and every item it reaches.
+    closures: HashMap<Item, String>,
     /// From names back to numbers, for reading a stored value: built when
     /// first needed, again if more have been declared since.
     by_name: Option<ByName>,
@@ -80,13 +125,24 @@ fn term_of(k: Arc<Known>, root: u32) -> Option<Tm> {
 impl KnownCache {
     /// A definition's name, as every build of the same text gives it: its
     /// module and name, and how many before it have both.
-    fn def_name(&mut self, g: &Globals, d: u32) -> String {
+    /// A staged definition is named by its name and how many before it
+    /// have it; a copy, by its digest, of the definition it copies and its
+    /// body.
+    fn def_name(&mut self, p: &Program, d: u32) -> String {
         if let Some(n) = self.def_names.get(&d) {
             return n.clone();
         }
-        let info = &g.defs[d as usize];
-        let k = g.defs[..d as usize].iter().filter(|i| i.module == info.module && i.name == info.name).count();
-        let n = escape(&format!("{}.{}#{k}", info.module, info.name));
+        let g = p.g;
+        let n = if let Some(info) = g.defs.get(d as usize) {
+            let k = g.defs[..d as usize].iter().filter(|i| i.module == info.module && i.name == info.name).count();
+            escape(&format!("{}.{}#{k}", info.module, info.name))
+        } else if let Some((i, (name, _))) = p.extra(d) {
+            let k = p.staged.map_or(0, |s| s.extra[..i].iter().filter(|e| e.0 == *name).count());
+            escape(&format!("staged {name}#{k}"))
+        } else {
+            let (digest, _) = self.item(p, Item::Def(d));
+            format!("copy%20{digest}")
+        };
         self.def_names.insert(d, n.clone());
         n
     }
@@ -109,7 +165,8 @@ impl KnownCache {
 
     /// Value `v` written with names: each node a line, parts first, the
     /// value last. The items it names are added to `items`.
-    fn encode(&mut self, g: &Globals, k: &Known, root: u32, items: &mut Vec<Item>) -> String {
+    fn encode(&mut self, p: &Program, k: &Known, root: u32, items: &mut Vec<Item>) -> String {
+        let g = p.g;
         let nodes = k.reachable(root);
         let at: HashMap<u32, usize> = nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
         let ids = |xs: &[u32]| xs.iter().map(|x| at[x].to_string()).collect::<Vec<_>>().join(" ");
@@ -130,7 +187,7 @@ impl KnownCache {
                 Node::Array(l, xs) => format!("a {l} {}", ids(xs)),
                 Node::Closure(Code::Def(d)) => {
                     items.push(Item::Def(d.0));
-                    format!("fd {}", self.def_name(g, d.0))
+                    format!("fd {}", self.def_name(p, d.0))
                 }
                 Node::Closure(Code::Con(c)) => {
                     items.push(Item::Ty(g.cons[c.0 as usize].ty.0));
@@ -144,43 +201,84 @@ impl KnownCache {
         out
     }
 
+    /// Static data `s` at `root` written with names, as `encode` writes a
+    /// known value: `None` if it holds what a name can't say (a function
+    /// of the program's first-order code, an immediate of no such kind).
+    fn encode_static(&mut self, p: &Program, s: &Static, root: u32, items: &mut Vec<Item>) -> Option<String> {
+        let g = p.g;
+        let nodes = s.reachable(root);
+        let at: HashMap<u32, usize> = nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+        let ids = |xs: &[u32]| xs.iter().map(|x| at[x].to_string()).collect::<Vec<_>>().join(" ");
+        let con = |n: u64, items: &mut Vec<Item>, this: &mut KnownCache| -> Option<String> {
+            let c = u32::try_from(n).ok().filter(|c| (*c as usize) < g.cons.len())?;
+            items.push(Item::Ty(g.cons[c as usize].ty.0));
+            Some(this.con_name(g, c))
+        };
+        let mut out = String::new();
+        for &n in &nodes {
+            let line = match s.node(n) {
+                SNode::Word(x) if w::is_int(*x) => format!("i {}", w::int_of(*x)),
+                SNode::Word(x) if w::is_nullary(*x) => format!("n {}", con(*x >> 3, items, self)?),
+                SNode::Word(x) if *x == w::UNIT => "u".into(),
+                SNode::Word(x) if *x == w::ERASED => "e".into(),
+                SNode::Word(_) => return None,
+                SNode::Big(b) => format!("b {b}"),
+                SNode::Bytes(b) => format!("y {}", hex(b)),
+                SNode::Obj { kind, tag, fields } if *kind == w::K_CON => format!("c {} {}", con(*tag, items, self)?, ids(fields)),
+                SNode::Obj { kind, fields, .. } if *kind == w::K_TUPLE => format!("t {}", ids(fields)),
+                SNode::Obj { .. } => return None,
+                SNode::Array { layout, elems } => format!("a {layout} {}", ids(elems)),
+                SNode::Global(d) if p.has_def(*d) => {
+                    items.push(Item::Def(*d));
+                    format!("g {}", self.def_name(p, *d))
+                }
+                SNode::ConFn(c) => format!("f {}", con(*c as u64, items, self)?),
+                SNode::Global(_) | SNode::Code(_) => return None,
+            };
+            out += line.trim_end();
+            out.push('\n');
+        }
+        Some(out)
+    }
+
     /// `t`'s `Debug` form with every number naming a definition, type or
     /// constructor replaced by its name, and each known value by a digest
     /// of its form written with names; the items it names are added to
     /// `items`.
-    fn render(&mut self, g: &Globals, t: &Tm, items: &mut Vec<Item>) -> String {
-        fn strip(c: &mut KnownCache, g: &Globals, t: &Tm, items: &mut Vec<Item>) -> Tm {
+    fn render(&mut self, p: &Program, t: &Tm, items: &mut Vec<Item>) -> String {
+        fn strip(c: &mut KnownCache, p: &Program, t: &Tm, items: &mut Vec<Item>) -> Tm {
             match t {
                 Tm::Known(v) => {
-                    let text = c.encode(g, &v.graph, v.id, items);
+                    let text = c.encode(p, &v.graph, v.id, items);
                     Tm::Lit(Lit::Str(Rc::from(format!("\0known {}", crate::verify::digest(&text)))))
                 }
-                _ => t.map_sub(|x, _| strip(c, g, x, items)),
+                _ => t.map_sub(|x, _| strip(c, p, x, items)),
             }
         }
-        let s = format!("{:?}", strip(self, g, t, items));
-        self.rename(g, &s, items)
+        let s = format!("{:?}", strip(self, p, t, items));
+        self.rename(p, &s, items)
     }
 
-    fn rename(&mut self, g: &Globals, s: &str, items: &mut Vec<Item>) -> String {
+    fn rename(&mut self, p: &Program, s: &str, items: &mut Vec<Item>) -> String {
+        let g = p.g;
         let mut out = String::with_capacity(s.len());
         let mut rest = s;
         loop {
             let next = ["DefId(", "TyId(", "ConId("].iter().filter_map(|p| rest.find(p).map(|i| (i, *p))).min();
-            let Some((i, p)) = next else {
+            let Some((i, pre)) = next else {
                 out += rest;
                 return out;
             };
             out += &rest[..i];
-            let after = &rest[i + p.len()..];
+            let after = &rest[i + pre.len()..];
             let digits = after.chars().take_while(|c| c.is_ascii_digit()).count();
             let n: Option<u32> = after[..digits].parse().ok();
             match (n, after[digits..].starts_with(')')) {
                 (Some(n), true) => {
-                    let name = match p {
-                        "DefId(" if (n as usize) < g.defs.len() => {
+                    let name = match pre {
+                        "DefId(" if p.has_def(n) => {
                             items.push(Item::Def(n));
-                            format!("def {}", self.def_name(g, n))
+                            format!("def {}", self.def_name(p, n))
                         }
                         "TyId(" if (n as usize) < g.tys.len() => {
                             items.push(Item::Ty(n));
@@ -190,37 +288,107 @@ impl KnownCache {
                             items.push(Item::Ty(g.cons[n as usize].ty.0));
                             format!("con {}", self.con_name(g, n))
                         }
-                        _ => format!("{p}{n})"),
+                        _ => format!("{pre}{n})"),
                     };
                     out += &format!("<{name}>");
                     rest = &after[digits + 1..];
                 }
                 _ => {
-                    out += p;
+                    out += pre;
                     rest = after;
                 }
             }
         }
     }
 
+    /// Closed code `ir` written with names, as a key needs it: `None` if
+    /// it has a part a name can't say. The items it names are added to
+    /// `items`.
+    fn ir_text(&mut self, p: &Program, ir: &Ir, out: &mut String, items: &mut Vec<Item>) -> Option<()> {
+        use std::fmt::Write;
+        let g = p.g;
+        let con = |c: u32, items: &mut Vec<Item>, this: &mut KnownCache| -> Option<String> {
+            g.cons.get(c as usize)?;
+            items.push(Item::Ty(g.cons[c as usize].ty.0));
+            Some(this.con_name(g, c))
+        };
+        let list = |this: &mut KnownCache, xs: &[std::sync::Arc<Ir>], out: &mut String, items: &mut Vec<Item>| -> Option<()> {
+            out.push('(');
+            for x in xs {
+                this.ir_text(p, x, out, items)?;
+                out.push(',');
+            }
+            out.push(')');
+            Some(())
+        };
+        match ir {
+            Ir::Lit(IrLit::Num(n)) => write!(out, "{n}").unwrap(),
+            Ir::Lit(IrLit::Big(s)) => write!(out, "big {s}").unwrap(),
+            Ir::Lit(IrLit::Str(s)) => write!(out, "{s:?}").unwrap(),
+            Ir::Lit(IrLit::Bytes(b)) => write!(out, "b{b:?}").unwrap(),
+            Ir::Static(v, id) => {
+                let text = self.encode_static(p, v, *id, items)?;
+                write!(out, "#{}", crate::verify::digest(&text)).unwrap();
+            }
+            Ir::Erased => out.push('_'),
+            Ir::Global(d) if p.has_def(d.0) => {
+                items.push(Item::Def(d.0));
+                write!(out, "<def {}>", self.def_name(p, d.0)).unwrap();
+            }
+            Ir::Con(c, xs) => {
+                write!(out, "<con {}>", con(c.0, items, self)?).unwrap();
+                list(self, xs, out, items)?;
+            }
+            Ir::Tuple(xs) => list(self, xs, out, items)?,
+            Ir::At(_, x) => self.ir_text(p, x, out, items)?,
+            Ir::Prim(op, xs, nat) => {
+                write!(out, "{op:?}{nat}").unwrap();
+                list(self, xs, out, items)?;
+            }
+            Ir::Call(h, xs) => {
+                self.ir_text(p, h, out, items)?;
+                list(self, xs, out, items)?;
+            }
+            Ir::ConFn(c) => write!(out, "<fn {}>", con(c.0, items, self)?).unwrap(),
+            _ => return None,
+        }
+        Some(())
+    }
+
     /// An item's digest, and the items its text names.
-    fn item(&mut self, g: &Globals, it: Item) -> (String, Vec<Item>) {
+    fn item(&mut self, p: &Program, it: Item) -> (String, Vec<Item>) {
         if let Some(r) = self.items.get(&it) {
             return r.clone();
         }
+        let g = p.g;
         let mut deps = Vec::new();
         let text = match it {
-            Item::Def(d) => {
+            Item::Def(d) if (d as usize) < g.defs.len() => {
                 let info = &g.defs[d as usize];
-                let (ty, body) = (info.ty.clone(), info.body.clone());
+                let ty = info.ty.clone();
+                // Native code runs the body staging gave it, if any.
+                let body = p.staged.and_then(|s| s.bodies.get(&crate::core::DefId(d))).cloned().or_else(|| info.body.clone());
                 let (opaque, sealed, comptime) = (info.opaque, info.sealed, format!("{:?}", info.comptime));
-                let ty = self.render(g, &ty, &mut deps);
+                let ty = self.render(p, &ty, &mut deps);
                 let body = match &body {
-                    Some(b) => self.render(g, b, &mut deps),
+                    Some(b) => self.render(p, b, &mut deps),
                     // A builtin: the runtime's code, which the executable covers.
                     None => "builtin".into(),
                 };
-                format!("def {}\nty {ty}\nbody {body}\nopaque {opaque} sealed {sealed} comptime {comptime}", self.def_name(g, d))
+                format!("def {}\nty {ty}\nbody {body}\nopaque {opaque} sealed {sealed} comptime {comptime}", self.def_name(p, d))
+            }
+            Item::Def(d) => {
+                if let Some((_, (_, body))) = p.extra(d) {
+                    format!("def {}\nbody {}", self.def_name(p, d), self.render(p, body, &mut deps))
+                } else if let Some(c) = p.copy(d) {
+                    // Its name is this text's digest: the definition it
+                    // copies, and its body, which holds the arguments put in.
+                    deps.push(Item::Def(c.of.0));
+                    let body = self.render(p, &c.body, &mut deps);
+                    format!("copy of {}\ndepth {} binders {:?}\nbody {body}", self.def_name(p, c.of.0), c.depth, c.binders)
+                } else {
+                    format!("unknown {d}")
+                }
             }
             Item::Ty(t) => {
                 let info = &g.tys[t as usize];
@@ -228,15 +396,15 @@ impl KnownCache {
                 let ctors = info.ctors.clone();
                 let flags = format!("record {} abstract {} positive {:?} negative {:?} dicts {}", info.is_record, info.is_abstract, info.positive, info.negative, info.dicts);
                 let mut text = format!("ty {}\n{flags}\n", self.ty_name(g, t));
-                for (x, p) in &params {
-                    text += &format!("param {x} {}\n", self.render(g, p, &mut deps));
+                for (x, ty) in &params {
+                    text += &format!("param {x} {}\n", self.render(p, ty, &mut deps));
                 }
                 for c in ctors {
                     let con = &g.cons[c.0 as usize];
                     let (tag, fields) = (con.tag, con.fields.clone());
                     text += &format!("con {} {tag}\n", self.con_name(g, c.0));
                     for (x, m, i, f) in &fields {
-                        text += &format!("field {x} {m:?} {i:?} {}\n", self.render(g, f, &mut deps));
+                        text += &format!("field {x} {m:?} {i:?} {}\n", self.render(p, f, &mut deps));
                     }
                 }
                 text
@@ -249,44 +417,98 @@ impl KnownCache {
         r
     }
 
-    /// The key of `t` at type `ty`: what the module comment says.
-    pub fn key(&mut self, g: &Globals, t: &Tm, ty: Option<&Tm>) -> String {
-        let mut todo = Vec::new();
-        let term = self.render(g, t, &mut todo);
-        let ty = ty.map(|ty| self.render(g, ty, &mut todo)).unwrap_or_default();
+    /// A digest of `it` and every item it reaches, each by name and digest.
+    fn closure(&mut self, p: &Program, it: Item) -> String {
+        if let Some(c) = self.closures.get(&it) {
+            return c.clone();
+        }
+        let mut todo = vec![it];
         let mut seen = HashSet::new();
         let mut parts = Vec::new();
-        while let Some(it) = todo.pop() {
-            if !seen.insert(it) {
+        while let Some(x) = todo.pop() {
+            if !seen.insert(x) {
                 continue;
             }
-            let (d, deps) = self.item(g, it);
-            let name = match it {
-                Item::Def(d) => format!("def {}", self.def_name(g, d)),
-                Item::Ty(t) => format!("ty {}", self.ty_name(g, t)),
+            let (d, deps) = self.item(p, x);
+            let name = match x {
+                Item::Def(d) => format!("def {}", self.def_name(p, d)),
+                Item::Ty(t) => format!("ty {}", self.ty_name(p.g, t)),
             };
             parts.push(format!("{name} {d}"));
             todo.extend(deps);
         }
         parts.sort();
-        let content = format!("{HEADER}\n{}\n{term}\n{ty}\n{}", crate::verify::tool_identity(), parts.join("\n"));
+        let c = crate::verify::digest(&parts.join("\n"));
+        self.closures.insert(it, c.clone());
+        c
+    }
+
+    /// A key over `text` and everything `items` reach.
+    fn key_of(&mut self, p: &Program, text: &str, mut items: Vec<Item>) -> String {
+        items.sort();
+        items.dedup();
+        let mut parts: Vec<String> = items.into_iter().map(|it| self.closure(p, it)).collect();
+        parts.sort();
+        let content = format!("{HEADER}\n{}\n{text}\n{}", crate::verify::tool_identity(), parts.join("\n"));
         crate::verify::digest(&content)
+    }
+
+    /// The key of `t` at type `ty`: what the module comment says.
+    pub fn key(&mut self, g: &Globals, t: &Tm, ty: Option<&Tm>) -> String {
+        let p = Program::of(g);
+        let mut items = Vec::new();
+        let term = self.render(&p, t, &mut items);
+        let ty = ty.map(|ty| self.render(&p, ty, &mut items)).unwrap_or_default();
+        self.key_of(&p, &format!("{term}\n{ty}"), items)
+    }
+
+    /// The key of closed code `ir` that folding computes, in program `p`:
+    /// `None` if it has a part a name can't say.
+    pub fn code_key(&mut self, p: &Program, ir: &Ir) -> Option<String> {
+        let mut items = Vec::new();
+        let mut text = String::from("folded ");
+        self.ir_text(p, ir, &mut text, &mut items)?;
+        Some(self.key_of(p, &text, items))
+    }
+
+    /// Constructors by name, for reading a stored value.
+    fn by_name(&mut self, g: &Globals) -> &ByName {
+        if self.by_name.as_ref().is_none_or(|b| b.defs_len != g.defs.len() || b.tys_len != g.tys.len()) {
+            let p = Program::of(g);
+            let defs = (0..g.defs.len() as u32).map(|d| (self.def_name(&p, d), d)).collect();
+            let cons = (0..g.cons.len() as u32).map(|c| (self.con_name(g, c), c)).collect();
+            self.by_name = Some(ByName { defs_len: g.defs.len(), tys_len: g.tys.len(), defs, cons });
+        }
+        self.by_name.as_ref().unwrap()
+    }
+
+    /// The lines stored under `key`, after the header.
+    fn read(key: &str) -> Option<String> {
+        let text = std::fs::read_to_string(dir()?.join(key)).ok()?;
+        let rest = text.strip_prefix(HEADER)?.strip_prefix('\n')?;
+        Some(rest.to_string())
+    }
+
+    /// Keep `text` under `key`.
+    fn write(key: &str, text: &str) {
+        let Some(dir) = dir() else { return };
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        // Whole or not at all: written elsewhere, then renamed.
+        let tmp = dir.join(format!("{key}.{}", std::process::id()));
+        if std::fs::write(&tmp, format!("{HEADER}\n{text}")).is_ok() {
+            let _ = std::fs::rename(&tmp, dir.join(key));
+        }
     }
 
     /// The value stored under `key`, read into this build's numbering.
     pub fn recall(&mut self, g: &Globals, key: &str) -> Option<Tm> {
-        let text = std::fs::read_to_string(dir()?.join(key)).ok()?;
-        let mut lines = text.lines();
-        (lines.next()? == HEADER).then_some(())?;
-        if self.by_name.as_ref().is_none_or(|b| b.defs_len != g.defs.len() || b.tys_len != g.tys.len()) {
-            let defs = (0..g.defs.len() as u32).map(|d| (self.def_name(g, d), d)).collect();
-            let cons = (0..g.cons.len() as u32).map(|c| (self.con_name(g, c), c)).collect();
-            self.by_name = Some(ByName { defs_len: g.defs.len(), tys_len: g.tys.len(), defs, cons });
-        }
-        let ByName { defs, cons, .. } = self.by_name.as_ref()?;
+        let text = Self::read(key)?;
+        let ByName { defs, cons, .. } = self.by_name(g);
         let mut b = Builder::default();
         let mut ids: Vec<u32> = Vec::new();
-        for l in lines {
+        for l in text.lines() {
             let (tag, rest) = l.split_once(' ').unwrap_or((l, ""));
             let parts = |r: &str| -> Option<Box<[u32]>> { r.split_whitespace().map(|x| ids.get(x.parse::<usize>().ok()?).copied()).collect() };
             let node = match tag {
@@ -318,7 +540,9 @@ impl KnownCache {
 
     /// Keep `value` under `key`, if it is a value that can be kept.
     pub fn store(&mut self, g: &Globals, key: &str, value: &Tm) {
-        let Some(dir) = dir() else { return };
+        if dir().is_none() {
+            return;
+        }
         let (k, root) = match value {
             Tm::Known(v) => (v.graph.clone(), v.id),
             Tm::Lit(l) => Known::of_lit(l),
@@ -329,14 +553,52 @@ impl KnownCache {
             }
             _ => return,
         };
-        let text = format!("{HEADER}\n{}", self.encode(g, &k, root, &mut Vec::new()));
-        if std::fs::create_dir_all(&dir).is_err() {
+        let text = self.encode(&Program::of(g), &k, root, &mut Vec::new());
+        Self::write(key, &text);
+    }
+
+    /// The static data stored under `key` (folding's), read into this
+    /// build's numbering: the graph and its root.
+    pub fn recall_static(&mut self, g: &Globals, key: &str) -> Option<(Static, u32)> {
+        let text = Self::read(key)?;
+        let cons = &self.by_name(g).cons;
+        let mut s = Static::default();
+        let mut ids: Vec<u32> = Vec::new();
+        for l in text.lines() {
+            let (tag, rest) = l.split_once(' ').unwrap_or((l, ""));
+            let parts = |r: &str| -> Option<Box<[u32]>> { r.split_whitespace().map(|x| ids.get(x.parse::<usize>().ok()?).copied()).collect() };
+            let node = match tag {
+                "i" => SNode::Word(w::mk_int(rest.parse().ok().filter(|n| w::fits(*n as i128))?)),
+                "n" => SNode::Word(w::nullary(*cons.get(rest)?)),
+                "u" => SNode::Word(w::UNIT),
+                "e" => SNode::Word(w::ERASED),
+                "b" => SNode::Big(rest.parse().ok()?),
+                "y" => SNode::Bytes(unhex(rest)?.into()),
+                "c" => {
+                    let (name, xs) = rest.split_once(' ').unwrap_or((rest, ""));
+                    SNode::Obj { kind: w::K_CON, tag: *cons.get(name)? as u64, fields: parts(xs)? }
+                }
+                "t" => SNode::Obj { kind: w::K_TUPLE, tag: 0, fields: parts(rest)? },
+                "a" => {
+                    let (l, xs) = rest.split_once(' ').unwrap_or((rest, ""));
+                    SNode::Array { layout: l.parse().ok()?, elems: parts(xs)? }
+                }
+                // Functions aren't kept: folding's values have none.
+                _ => return None,
+            };
+            ids.push(s.add(node));
+        }
+        let root = *ids.last()?;
+        Some((s, root))
+    }
+
+    /// Keep static data `s` at `root` under `key`, if it can be kept.
+    pub fn store_static(&mut self, p: &Program, key: &str, s: &Static, root: u32) {
+        if dir().is_none() {
             return;
         }
-        // Whole or not at all: written elsewhere, then renamed.
-        let tmp = dir.join(format!("{key}.{}", std::process::id()));
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, dir.join(key));
+        if let Some(text) = self.encode_static(p, s, root, &mut Vec::new()) {
+            Self::write(key, &text);
         }
     }
 }
