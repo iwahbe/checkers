@@ -1,0 +1,69 @@
+error[E0409]: `g` captured `term`, an authority, so it may be called only once, but `twice` may call it more than once
+  --> single_use.ck:20:9
+   |
+20 |     let g = \_ -> say "hello" term
+   |         ^
+   = help: pass `term` to the closure as a parameter, so that each call is given it
+
+error[E0409]: a closure that captured `term`, an authority, may be called only once, but here it may be called more than once
+  --> single_use.ck:53:12
+   |
+53 | fn to_many term -> r : term~Term, r~Unit
+   |            ^^^^
+   = note: a closure that captured `term` is passed to `many`, whose parameter is not `own`, so `many` may call it any number of times
+   = help: pass `term` to the closure as a parameter, or mark that parameter of `many` with `own` (as in `f~own (Unit -> a)`)
+
+error[E0409]: `g` captured `term`, an authority, so it may be called only once, but `by_let` may call it more than once
+  --> single_use.ck:57:9
+   |
+57 |     let g = \_ -> say "hello" term
+   |         ^
+   = note: `g` is passed to `many`, whose parameter is not `own`, so `many` may call it any number of times
+   = help: pass `term` to the closure as a parameter, or mark that parameter of `many` with `own` (as in `f~own (Unit -> a)`)
+
+error[E0409]: a closure that captured `term`, an authority, may be called only once, but here it may be called more than once
+  --> single_use.ck:60:13
+   |
+60 | fn returned term -> k : term~Term, k~(Unit -> Unit)
+   |             ^^^^
+   = note: a closure that captured an authority holds one use of it: it may be called where it is made, bound with `let` and called once, or passed to a parameter declared `own`
+   = help: make `term` a parameter of the closure
+
+error[E0409]: `g` captured `term`, an authority, so it may be called only once, but `partial_captured` may call it more than once
+  --> single_use.ck:75:9
+   |
+75 |     let g = flip_say term
+   |         ^
+   = help: pass `term` to the closure as a parameter, so that each call is given it
+
+error[E0409]: `h` captured `term`, an authority, so it may be called only once, but `through` may call it more than once
+  --> single_use.ck:85:9
+   |
+85 |     let h = \_ -> g ()
+   |         ^
+   = help: pass `term` to the closure as a parameter, so that each call is given it
+
+error[E0409]: `g` captured `term`, an authority, so it may be called only once, but `through_many` may call it more than once
+  --> single_use.ck:90:9
+   |
+90 |     let g = \_ -> say "hello" term
+   |         ^
+   = note: a closure that uses `g` is passed to `many`, whose parameter is not `own`, so `many` may call it any number of times
+   = help: pass `term` to the closure as a parameter, or mark that parameter of `many` with `own` (as in `f~own (Unit -> a)`)
+
+error[E0409]: `g` captured `caps`, which holds an authority, so it may be called only once, but `inside` may call it more than once
+  --> single_use.ck:99:9
+   |
+99 |     let g = \_ -> say "hello" caps.term
+   |         ^
+   = help: pass `caps` to the closure as a parameter, so that each call is given it
+
+error[E0409]: a closure that captured `term`, an authority, may be called only once, but here it may be called more than once
+   --> single_use.ck:111:12
+    |
+111 | fn generic term -> r : term~Term, r~Unit
+    |            ^^^^
+    = note: a closure that captured `term` is passed to `both`, whose parameter is not `own`, so `both` may call it any number of times
+    = help: pass `term` to the closure as a parameter, or mark that parameter of `both` with `own` (as in `f~own (Unit -> a)`)
+
+single_use.ck: 9 errors, 0 warnings

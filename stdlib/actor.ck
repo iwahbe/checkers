@@ -17,7 +17,7 @@ export fn new init sched -> a : init~s, sched~Sched, a~Actor s
     Actor (cown.new init sched)
 
 # Schedule message `f` on actor `a`.
-export fn send a f sched -> u : a~Actor s, f~(s -> s), sched~Sched, u~()
+export fn send a f sched -> u : a~Actor s, f~own (s -> s), sched~Sched, u~()
     when x = a.state using sched
         f x
     ()

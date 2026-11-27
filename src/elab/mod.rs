@@ -835,9 +835,10 @@ pub struct Elab {
     /// allocation: two variables of one name are told apart (D171, D172 d). The
     /// name is kept so the address isn't reused.
     pub binder_spans: HashMap<usize, (Name, Span)>,
-    /// A lambda's parameter checked against a function type that takes it
-    /// `own`: its type and the level it was bound at, so the usage check
-    /// can tell, once metas are solved, whether it may be a resource (D172 b).
+    /// A lambda's parameter: its type and the level it was bound at, so the
+    /// usage check can tell, once metas are solved, whether it may be a
+    /// resource (D172 b) or holds an authority (a closure that captured it
+    /// is single-use, §8.3).
     pub lam_domains: HashMap<usize, (Val, usize)>,
     /// A variable whose type may be a resource but, in an arm of a `match`
     /// on a variable, is refined to one that holds none (D173): the

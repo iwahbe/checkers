@@ -60,6 +60,30 @@ fn both a b fs -> r : a~String, b~String, fs~Fs, r~Result (Bytes, Bytes) IoError
 
 Two uses of one authority are independent to the prover: the compiler gives each use a token of its own, so no two calls receive the same argument and neither can be proved equal to the other. When the program runs, the calls happen in program order. The cost is that nothing can be proved about the order of effects through an authority (that a read after a write returns what was written).
 
+**Closures that capture an authority are single-use.** A closure (a lambda, or a function applied to some of its arguments) that uses a variable holding an authority captured one token of it, so it may be called at most once. Like a [one-shot closure](#one-shot-closures), it may be called where it is made, bound with `let` and called once, or passed to a parameter declared `own`; unlike one, it may also go uncalled. Anywhere else (called twice, passed to a parameter that isn't `own`, returned) is E0409. A closure that captured such a closure captured the authority too. Pass the authority to the closure as a parameter instead, so that each call is given it:
+
+```checkers
+import std.terminal (Term)
+import std.terminal
+
+fn greet a b term -> r : a~String, b~String, term~Term, r~Unit
+    let say = \name t -> terminal.print_line ("hello " ++ name) t
+    say a term
+    say b term
+```
+
+```checkers,compile_fail,E0409
+import std.terminal (Term)
+import std.terminal
+
+fn twice term -> r : term~Term, r~Unit
+    let say = \_ -> terminal.print_line "hello" term
+    say ()
+    say ()
+```
+
+Behaviour bodies (`future.fork`, `when`) run once, so they may capture authorities freely.
+
 **Attenuation.** An authority can be narrowed: `files.within dir fs` is an `Fs` that reaches only `dir` (absolute paths and `..` are refused, and so is a symbolic link that leads out of it). Passing a narrowed capability bounds what a function can do.
 
 **Calls for their effect.** A call that returns `Unit` may stand alone as a line of a block, as `terminal.print_line` does above ([Blocks](expressions.md#blocks)).

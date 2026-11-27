@@ -14,13 +14,12 @@ error[E0450]: cannot prove `x == y`, required to call `need`
    = note: `new` is built into `std.cown`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
    = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
 
-error[E0450]: cannot prove `x == y`, required to call `need`
-  --> effect_calls.ck:28:5
+error[E0409]: `g` captured `term`, an authority, so it may be called only once, but `closure` may call it more than once
+  --> effect_calls.ck:27:9
    |
-28 |     need (g ()) (g ())
-   |     ^^^^^^^^^^^^^^^^^^ `need` requires `x == y`
-   = note: `read_line` is built into `std.terminal`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
-   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+27 |     let g = \_ -> terminal.read_line term
+   |         ^
+   = help: pass `term` to the closure as a parameter, so that each call is given it
 
 error[E0450]: cannot prove `x == y`, required to call `need`
   --> effect_calls.ck:40:5

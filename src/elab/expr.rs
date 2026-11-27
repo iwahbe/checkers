@@ -170,10 +170,9 @@ impl Elab {
                 let v = Val::var(cx.lvl());
                 let nm = self.binder_name(&name, p.span);
                 // Whether `own` here means anything is decided once the
-                // parameter's type is known, by the usage check (D172 b).
-                if *m == Mult::One {
-                    self.lam_domains.insert(Rc::as_ptr(&nm) as *const u8 as usize, ((**a).clone(), cx.lvl()));
-                }
+                // parameter's type is known, by the usage check (D172 b),
+                // as is whether a closure capturing it captured an authority.
+                self.lam_domains.insert(Rc::as_ptr(&nm) as *const u8 as usize, ((**a).clone(), cx.lvl()));
                 // A domain with an inline refinement (`(x~a, contains xs x)`,
                 // `(i~Nat, i < n)`): the parameter has its base type and the
                 // predicates as facts, so a type inferred from it (`map (\x
@@ -603,11 +602,14 @@ impl Elab {
                         }
                     };
                     let at = quote(&self.g, cx.lvl(), &a);
+                    let nm = Rc::<str>::from(name.as_str());
+                    // Its type, once solved, for the usage check.
+                    self.lam_domains.insert(Rc::as_ptr(&nm) as *const u8 as usize, (a.clone(), cx.lvl()));
                     let l = cx.bind(&name, a, Mult::Many);
                     if name != "_" {
                         self.bound_at(cx, l, p.span);
                     }
-                    binders.push((Rc::<str>::from(name.as_str()), at));
+                    binders.push((nm, at));
                 }
                 for (n, p) in taken_apart.into_iter().rev() {
                     // At the pattern's place, so a case it leaves out is
