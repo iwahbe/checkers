@@ -451,6 +451,7 @@ impl<'g> Compiler<'g> {
                 Node::Erased => out.add(SNode::Word(w::ERASED)),
                 Node::Closure(crate::known::Code::Def(d)) => out.add(SNode::Global(d.0)),
                 Node::Closure(crate::known::Code::Con(c)) => out.add(SNode::ConFn(c.0)),
+                Node::Closure(crate::known::Code::Lam(code)) => out.add(SNode::Lam(code.clone())),
                 Node::Pap(xs) => out.add(SNode::Obj { kind: w::K_PAP, tag: 0, fields: xs.iter().map(|p| at[p]).collect() }),
                 Node::Tuple(xs) if xs.is_empty() => out.add(SNode::Word(w::UNIT)),
                 Node::Tuple(xs) => out.tuple(xs.iter().map(|p| at[p]).collect()),
@@ -903,8 +904,10 @@ pub fn globals_in(ir: &Ir, out: &mut Vec<DefId>) {
         // The functions static data holds.
         Ir::Static(v, id) => {
             for x in v.reachable(*id) {
-                if let super::lower::SNode::Global(d) = v.node(x) {
-                    out.push(DefId(*d));
+                match v.node(x) {
+                    super::lower::SNode::Global(d) => out.push(DefId(*d)),
+                    super::lower::SNode::Lam(code) => globals_in(&code.ir, out),
+                    _ => {}
                 }
             }
         }
@@ -918,4 +921,173 @@ pub fn globals_in(ir: &Ir, out: &mut Vec<DefId>) {
         }
         _ => {}
     }
+}
+
+/// What `write_text` asks its caller to name: a definition, a
+/// constructor, static data, or whose code a part is.
+pub enum Named<'a> {
+    Def(DefId),
+    Con(ConId),
+    Static(&'a Arc<super::lower::Static>, u32),
+    Owner(Option<DefId>),
+}
+
+/// Code written exactly, as text: equal texts, equal code. `name` writes
+/// what the text names (`None`: it can't, and neither can the text).
+/// Recursive over the code's nesting, as compiling it is.
+pub fn write_text(ir: &Ir, name: &mut dyn FnMut(Named, &mut String) -> Option<()>, out: &mut String) -> Option<()> {
+    use std::fmt::Write;
+    let list = |xs: &[Arc<Ir>], name: &mut dyn FnMut(Named, &mut String) -> Option<()>, out: &mut String| -> Option<()> {
+        out.push('(');
+        for x in xs {
+            write_text(x, name, out)?;
+            out.push(',');
+        }
+        out.push(')');
+        Some(())
+    };
+    match ir {
+        Ir::Var(i) => write!(out, "v{i}").unwrap(),
+        Ir::Global(d) => name(Named::Def(*d), out)?,
+        Ir::Erased => out.push('_'),
+        Ir::Lit(Lit::Num(n)) => write!(out, "{n}").unwrap(),
+        Ir::Lit(Lit::Big(s)) => write!(out, "big{s}").unwrap(),
+        Ir::Lit(Lit::Str(s)) => write!(out, "{s:?}").unwrap(),
+        Ir::Lit(Lit::Bytes(b)) => write!(out, "b{b:?}").unwrap(),
+        Ir::Lam(o, b) => {
+            out.push('\\');
+            name(Named::Owner(*o), out)?;
+            out.push('.');
+            write_text(b, name, out)?;
+        }
+        Ir::Call(h, xs) => {
+            out.push('@');
+            write_text(h, name, out)?;
+            list(xs, name, out)?;
+        }
+        Ir::Let(v, b) => {
+            out.push_str("let ");
+            write_text(v, name, out)?;
+            out.push(';');
+            write_text(b, name, out)?;
+        }
+        Ir::Tuple(xs) => {
+            out.push('t');
+            list(xs, name, out)?;
+        }
+        Ir::Proj(x, i, r) => {
+            write!(out, "proj{i}{r} ").unwrap();
+            write_text(x, name, out)?;
+        }
+        Ir::Field(x, i) => {
+            write!(out, "field{i} ").unwrap();
+            write_text(x, name, out)?;
+        }
+        Ir::Con(c, xs) => {
+            out.push('c');
+            name(Named::Con(*c), out)?;
+            list(xs, name, out)?;
+        }
+        Ir::ConFn(c) => {
+            out.push('f');
+            name(Named::Con(*c), out)?;
+        }
+        Ir::Prim(op, xs, nat) => {
+            write!(out, "{op:?}{nat}").unwrap();
+            list(xs, name, out)?;
+        }
+        Ir::Par(xs) => {
+            out.push_str("par");
+            list(xs, name, out)?;
+        }
+        Ir::Case(s, c) => {
+            out.push_str("case ");
+            write_text(s, name, out)?;
+            out.push('{');
+            for (con, n, b) in &c.branches {
+                name(Named::Con(*con), out)?;
+                write!(out, " {n}->").unwrap();
+                write_text(b, name, out)?;
+                out.push(';');
+            }
+            for (l, b) in &c.lits {
+                write_text(&Ir::Lit(l.clone()), name, out)?;
+                out.push_str("->");
+                write_text(b, name, out)?;
+                out.push(';');
+            }
+            if let Some(d) = &c.default {
+                out.push_str("_->");
+                write_text(d, name, out)?;
+            }
+            out.push('}');
+        }
+        Ir::At(o, x) => {
+            out.push_str("at ");
+            name(Named::Owner(*o), out)?;
+            out.push(' ');
+            write_text(x, name, out)?;
+        }
+        Ir::Fail(m) => write!(out, "fail{m:?}").unwrap(),
+        Ir::Static(v, id) => name(Named::Static(v, *id), out)?,
+    }
+    Some(())
+}
+
+/// The free variables of `ir`, as indices outside it.
+pub fn free_vars(ir: &Ir, out: &mut std::collections::BTreeSet<usize>) {
+    fn go(ir: &Ir, depth: usize, out: &mut std::collections::BTreeSet<usize>) {
+        match ir {
+            Ir::Var(i) if *i >= depth => {
+                out.insert(i - depth);
+            }
+            _ => {
+                for (x, n) in ir.subterms() {
+                    go(x, depth + n, out);
+                }
+            }
+        }
+    }
+    go(ir, 0, out)
+}
+
+/// `ir` with each definition `d` it refers to replaced by `f(d)`, where
+/// that is some closed code.
+pub fn map_globals(ir: &Ir, f: &dyn Fn(DefId) -> Option<Ir>) -> Ir {
+    match ir {
+        Ir::Global(d) => f(*d).unwrap_or(Ir::Global(*d)),
+        _ => ir.map_subterms(|x, _| map_globals(x, f)),
+    }
+}
+
+/// `ir` with each free variable `i` renamed to `f(i)`.
+pub fn rename(ir: &Ir, f: &dyn Fn(usize) -> usize) -> Ir {
+    fn go(ir: &Ir, f: &dyn Fn(usize) -> usize, depth: usize) -> Ir {
+        match ir {
+            Ir::Var(i) if *i >= depth => Ir::Var(f(i - depth) + depth),
+            _ => ir.map_subterms(|x, n| go(x, f, depth + n)),
+        }
+    }
+    go(ir, f, 0)
+}
+
+/// `ir`, under `m` lambdas, with the variables they bind replaced by
+/// closed code `args` (the first lambda's by the first): the body.
+pub fn apply_closed(ir: &Ir, args: &[Arc<Ir>]) -> Ir {
+    fn go(ir: &Ir, args: &[Arc<Ir>], depth: usize) -> Ir {
+        let m = args.len();
+        match ir {
+            Ir::Var(i) if *i >= depth && i - depth < m => shift(&args[m - 1 - (i - depth)], 0, 0),
+            Ir::Var(i) if *i >= depth => Ir::Var(i - m),
+            _ => ir.map_subterms(|x, n| go(x, args, depth + n)),
+        }
+    }
+    let mut b = ir;
+    for _ in args {
+        match b {
+            Ir::Lam(_, x) => b = x,
+            _ => unreachable!("code under as many lambdas as arguments"),
+        }
+    }
+    go(b, args, 0)
 }

@@ -531,6 +531,7 @@ impl<'p, M: Module> Gen<'p, M> {
                     Placed::Data(self.closure(f), 0)
                 }
                 SNode::Code(f) => Placed::Data(self.closure(*f), 0),
+                SNode::Lam(_) => unreachable!("a lambda's code made a function when lowered"),
                 SNode::Obj { kind, tag, fields } => {
                     let off = out.len();
                     out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
