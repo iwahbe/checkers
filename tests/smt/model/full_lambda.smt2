@@ -1,0 +1,8 @@
+(set-logic ALL)
+(declare-const a (Array Int Int))
+(declare-fun f (Int) Int)
+(assert (= a (lambda ((x Int)) (ite (< x 2) 1 (f x)))))
+(assert (= (select a 0) 1))
+(assert (= (select a 5) (f 5)))
+(assert (not false))
+(check-sat)

@@ -1,0 +1,9 @@
+-- stdout
+(set-logic ALL)
+(declare-datatypes ((D 0) (E 0)) (((K) (KK (h E))) ((L (g (Seq D)) (a (Array Int D))))))
+(declare-const x E)
+(assert (= x ((as L E) (seq.unit (as K D)) ((as const (Array Int D)) (as K D)))))
+(assert (not false))
+(check-sat)
+-- stderr
+-- exit 0

@@ -1,0 +1,29 @@
+-- stdout
+tests/smt/models/corpus/bang_name: not read: the query introduces a name with `!`, as Z3's own names in a model are
+tests/smt/models/corpus/blank_line.z3: doesn't read: its first line after the comments is not exactly `sat`, `unsat` or `unknown`
+tests/smt/models/corpus/crlf.z3: doesn't read: its first line after the comments is not exactly `sat`, `unsat` or `unknown`
+tests/smt/models/corpus/error_before_sat.z3: doesn't read: its first line after the comments is not exactly `sat`, `unsat` or `unknown`
+tests/smt/models/corpus/forall_fact_false: Z3's model is not a model: fact 1 is false
+tests/smt/models/corpus/lone_answer.smt2: doesn't read: no such file, beside its answer
+tests/smt/models/corpus/missing_answer.z3: doesn't read: no such file, beside its query
+tests/smt/models/corpus/notes.txt: neither a query (`.smt2`) nor an answer (`.z3`)
+tests/smt/models/corpus/trailing_space.z3: doesn't read: its first line after the comments is not exactly `sat`, `unsat` or `unknown`
+definitions: each taken as terminating, on the word of whoever ran this (`--terminating`)
+12 queries and other files
+  1 neither a query nor an answer (listed above)
+  1 answered `unsat`: no model to check (nothing after `unsat` is read)
+  0 answered `unknown`: no model to check (nothing after `unknown` is read)
+  0 where Z3 run now doesn't answer `sat`, or can't be run (with `--z3`; listed above, and fail the run)
+  0 without `(get-value …)`: no values printed (nothing after `sat` is read)
+  1 with a name with `!`, as Z3's own names: not read, and fail the run (listed above)
+  6 whose query, answer or model doesn't read (listed above)
+  1 with a `forall` without `:pattern`: not checked
+  0 with only `forall`s with `:pattern`: not checked
+  1 with an assertion false in Z3's model (listed above)
+  1 where every assertion holds
+      (0 of them with definitions, taken as terminating)
+      (0 of them with a `lambda`, which `refutes` refuses)
+  0 not determined by what Z3 printed, by the first reason:
+  0 where `refutes` disagrees (listed above)
+-- stderr
+-- exit 1

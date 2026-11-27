@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+no model read: the query introduces a name with `!`, as Z3's own names in a model are
+-- stderr
+-- exit 0

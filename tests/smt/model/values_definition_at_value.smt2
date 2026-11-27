@@ -1,0 +1,10 @@
+(set-logic ALL)
+; A value printed for a definition's call at a constant's value that the
+; definition doesn't give: not read. (The answer is edited.)
+(define-fun g ((p Int)) Int (+ p 1))
+(declare-const x Int)
+(declare-const y Int)
+(assert (< x y))
+(assert (not false))
+(check-sat)
+(get-value (x y (g x)))

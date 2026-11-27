@@ -1,0 +1,4 @@
+(set-logic ALL)
+; n elements from i, as many as there are; empty unless 0 <= i < len and 0 < n.
+(assert (not (and (= (seq.extract (seq.++ (seq.unit 1) (seq.unit 2) (seq.unit 3)) 1 1) (seq.unit 2)) (= (seq.extract (seq.++ (seq.unit 1) (seq.unit 2) (seq.unit 3)) 1 10) (seq.++ (seq.unit 2) (seq.unit 3))) (= (seq.extract (seq.++ (seq.unit 1) (seq.unit 2) (seq.unit 3)) 2 5) (seq.unit 3)) (= (seq.extract (seq.++ (seq.unit 1) (seq.unit 2) (seq.unit 3)) (- 1) 2) (as seq.empty (Seq Int))) (= (seq.extract (seq.++ (seq.unit 1) (seq.unit 2) (seq.unit 3)) 3 1) (as seq.empty (Seq Int))) (= (seq.extract (seq.++ (seq.unit 1) (seq.unit 2) (seq.unit 3)) 0 (- 1)) (as seq.empty (Seq Int))) (= (seq.extract (seq.++ (seq.unit 1) (seq.unit 2) (seq.unit 3)) 0 0) (as seq.empty (Seq Int))) (= (seq.extract (as seq.empty (Seq Int)) 0 1) (as seq.empty (Seq Int))))))
+(check-sat)

@@ -1,0 +1,8 @@
+-- stdout
+z3: sat
+model: (get-model)
+fact 1: holds
+the negated goal: holds
+refutes: no (a `lambda`)
+-- stderr
+-- exit 0

@@ -1,0 +1,8 @@
+-- stdout
+(set-logic ALL)
+(declare-datatypes ((N 1)) ((par (A) ((nnil) (ncons (h A) (t (N (N A))))))))
+(declare-const c (N Int))
+(assert (not false))
+(check-sat)
+-- stderr
+-- exit 0

@@ -1,0 +1,9 @@
+-- stdout
+z3: sat
+model: (get-value …)
+fact 1: holds
+fact 2: not determined: Z3 didn't print `f` at these arguments
+the negated goal: holds
+refutes: no
+-- stderr
+-- exit 0

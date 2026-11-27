@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: line 4 column 8: string literals are outside the subset `ckc` writes
+-- stderr
+-- exit 0

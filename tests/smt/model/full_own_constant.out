@@ -1,0 +1,10 @@
+-- stdout
+z3: sat
+model: (get-model)
+definitions: each taken as terminating, on the word of whoever ran this (`--terminating`)
+Z3's value of `k`: as the query gives it
+fact 1: holds
+the negated goal: holds
+refutes: yes
+-- stderr
+-- exit 0

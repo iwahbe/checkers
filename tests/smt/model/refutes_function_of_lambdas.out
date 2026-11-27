@@ -1,0 +1,7 @@
+-- stdout
+z3: unsat
+no model: Z3 answered unsat; the assertions with nothing given:
+fact 1: not determined: a `lambda`, which has no normal form
+the negated goal: holds
+-- stderr
+-- exit 0

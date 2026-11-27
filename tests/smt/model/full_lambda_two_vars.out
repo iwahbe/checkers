@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: a `lambda` that isn't of one variable, of the array's index sort
+-- stderr
+-- exit 0

@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: a printed value for a term other than the one asked for there
+-- stderr
+-- exit 0

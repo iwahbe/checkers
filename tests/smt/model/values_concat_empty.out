@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: `seq.++` with the wrong number of arguments
+-- stderr
+-- exit 0

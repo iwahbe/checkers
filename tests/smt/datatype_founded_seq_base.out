@@ -1,0 +1,9 @@
+-- stdout
+(set-logic ALL)
+(declare-datatypes ((D 0)) (((K (f (Seq D))) (B))))
+(declare-const x D)
+(assert (= x ((as K D) (seq.unit (as B D)))))
+(assert (not false))
+(check-sat)
+-- stderr
+-- exit 0

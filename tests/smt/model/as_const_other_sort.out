@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: an `as` whose sort isn't the one expected
+-- stderr
+-- exit 0

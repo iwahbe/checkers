@@ -48,6 +48,12 @@
 //!                         too, checks with no errors and no warnings.
 //! tests/smt/NAME.smt2  → NAME.out is what `smt/main.ck parse` writes for it: the
 //!                         query written back, or the error reading it (line and column).
+//! tests/smt/models/corpus/ → tests/smt/models/models.out is what `smt/main.ck models
+//!                         --terminating` writes for it: every file accounted for.
+//! tests/smt/model/NAME.smt2 → NAME.out is what `smt/main.ck model NAME.smt2 NAME.z3`
+//!                         writes (with `--terminating`, but for `unmarked_*`): each assertion in
+//!                         the model of Z3's answer NAME.z3
+//!                         (written by `scripts/smt-model-answers.sh`, which asks Z3).
 //! site/*.md, README.md, the standard library's documentation → `checkers site`
 //!                         and `checkers doc` give no warnings: links resolve, code
 //!                         blocks compile and run (D148).
@@ -869,6 +875,17 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
             let actual = shown(&run_with(&exe.0, &["parse"], &fs::read(&path).unwrap(), root));
             compare(root, &path.with_extension("out"), &actual, update, &mut failures);
         }
+        for path in files_with(&root.join("tests").join("smt").join("model"), "smt2") {
+            count += 1;
+            let query = path.strip_prefix(root).unwrap().display().to_string();
+            let answer = path.with_extension("z3").strip_prefix(root).unwrap().display().to_string();
+            let unmarked = path.file_name().unwrap().to_string_lossy().starts_with("unmarked_");
+            let args: Vec<&str> = if unmarked { vec!["model", &query, &answer] } else { vec!["model", "--terminating", &query, &answer] };
+            let actual = shown(&run_with(&exe.0, &args, b"", root));
+            compare(root, &path.with_extension("out"), &actual, update, &mut failures);
+        }
+        count += 1;
+        datatype_scaling(&exe.0, root, &mut failures);
         // `main` answers each `tests/smt/answer/*.smt2` as `z3 -in` would.
         for path in files_with(&root.join("tests").join("smt").join("answer"), "smt2") {
             count += 1;
@@ -904,6 +921,19 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
             fs::read_to_string(&saved.0).unwrap_or_default()
         );
         compare(root, &root.join(dir).join("compare.out"), &actual, update, &mut failures);
+        // `main models` accounts for every file of a directory.
+        count += 1;
+        let out = run_with(&exe.0, &["models", "--terminating", "tests/smt/models/corpus"], b"", root);
+        compare(root, &root.join("tests/smt/models/models.out"), &shown(&out), update, &mut failures);
+        // `--z3` with a stand-in for `z3` that now answers `unsat`, a
+        // program that can't be run, and no directory: each fails the run.
+        count += 1;
+        let z3 = "tests/smt/compare/fake-z3";
+        let asked = run_with(&exe.0, &["models", "--terminating", "--z3", z3, "tests/smt/models/z3"], b"", root);
+        let unrun = run_with(&exe.0, &["models", "--z3", "tests/smt/models/no-such-program", "tests/smt/models/z3"], b"", root);
+        let none = run_with(&exe.0, &["models"], b"", root);
+        let actual = format!("-- asked again\n{}-- can't run\n{}-- no directory\n{}", shown(&asked), shown(&unrun), shown(&none));
+        compare(root, &root.join("tests/smt/models/z3.out"), &actual, update, &mut failures);
         // The reader's reserved spellings are those scripts/reserved.py
         // measured with Z3 (smt/reserved.txt); never rewritten here.
         count += 1;
@@ -917,6 +947,83 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
         }
         (count, failures)
     });
+}
+
+/// The datatype check's time grows with the query: `main parse`'s time on
+/// a query and on one four times its size. Within one declaration (its
+/// parameters, a datatype nested in itself, a parameter passed round),
+/// four times the size may take at most ten times as long, which no search
+/// over choices of parameters can (each was exponential once). Over many
+/// declarations, each looks at the datatypes before it (places over every
+/// datatype of the signature), as reading the query does, so four times
+/// the declarations may take at most twenty times as long: quadratic work
+/// takes sixteen, cubic sixty-four.
+fn datatype_scaling(exe: &Path, root: &Path, failures: &mut Vec<String>) {
+    fn query(decls: String) -> Vec<u8> {
+        format!("(set-logic ALL)\n{decls}(assert (not false))\n(check-sat)\n").into_bytes()
+    }
+    fn params(n: usize) -> String {
+        let ps: Vec<String> = (1..=n).map(|i| format!("A{i}")).collect();
+        let fs: Vec<String> = (1..=n).map(|i| format!("(f{i} A{i})")).collect();
+        format!("(declare-datatypes ((R {n})) ((par ({}) ((r {})))))\n", ps.join(" "), fs.join(" "))
+    }
+    fn rotated(n: usize) -> String {
+        let ps: Vec<String> = (0..=n).map(|i| format!("A{i}")).collect();
+        let rs: Vec<String> = (1..=n).chain([0]).map(|i| format!("A{i}")).collect();
+        format!("(declare-datatypes ((M {})) ((par ({}) ((base (b A0)) (m (x (M {})))))))\n", n + 1, ps.join(" "), rs.join(" "))
+    }
+    fn nested(n: usize) -> String {
+        let t = (0..n).fold("Int".to_string(), |t, _| format!("(P {t} T)"));
+        format!(
+            "(declare-datatypes ((Opt 1)) ((par (B) ((none) (some (v B))))))\n\
+             (declare-datatypes ((P 2)) ((par (A B) ((p (x A) (y A) (z (Opt B)))))))\n\
+             (declare-datatypes ((T 0)) (((leaf) (mk (q {t})))))\n"
+        )
+    }
+    fn chained(n: usize) -> String {
+        let mut s = "(declare-datatypes ((B0 1)) ((par (A) ((b0 (v0 A))))))\n".to_string();
+        for i in 1..n {
+            s += &format!("(declare-datatypes ((B{i} 1)) ((par (A) ((b{i} (v{i} (B{} A)))))))\n", i - 1);
+        }
+        s
+    }
+    fn group(n: usize) -> String {
+        let heads: Vec<String> = (1..=n).map(|i| format!("(G{i} 0)")).collect();
+        let mut bodies: Vec<String> = (1..n).map(|i| format!("((g{i} (h{i} G{})))", i + 1)).collect();
+        bodies.push(format!("((g{n} (h{n} G1)) (gb))"));
+        format!("(declare-datatypes ({}) ({}))\n", heads.join(" "), bodies.join(" "))
+    }
+    // The fastest of three runs, in milliseconds: the least disturbed.
+    let time = |name: &str, src: &[u8], failures: &mut Vec<String>| -> f64 {
+        (0..3)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                let out = run_with(exe, &["parse"], src, root);
+                let ms = start.elapsed().as_secs_f64() * 1000.0;
+                if !out.status.success() {
+                    failures.push(format!("── datatype scaling: {name} ──\n{}", String::from_utf8_lossy(&out.stdout)));
+                }
+                ms
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    // A name, the query of size `n`, the smaller `n`, and how many times as
+    // long the larger may take.
+    type Case = (&'static str, fn(usize) -> String, usize, f64);
+    let cases: [Case; 5] = [
+        ("parameters", params, 16, 10.0),
+        ("rotated parameters", rotated, 16, 10.0),
+        ("nested in itself", nested, 16, 10.0),
+        ("declarations", chained, 100, 20.0),
+        ("one group", group, 100, 20.0),
+    ];
+    for (name, make, n, most) in cases {
+        let small = time(name, &query(make(n)), failures);
+        let large = time(name, &query(make(4 * n)), failures);
+        if large >= most * small.max(20.0) {
+            failures.push(format!("── datatype scaling: {name} ──\n{n} took {small:.0} ms, {} took {large:.0} ms", 4 * n));
+        }
+    }
 }
 
 /// `text` with the time `main compare` measured for our answers, which

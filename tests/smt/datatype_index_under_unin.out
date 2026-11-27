@@ -1,0 +1,4 @@
+-- stdout
+(error "line 6 column 1: a field whose sort is an array may not mention a datatype of its own group in its index sort, nor in its value sort unless that is itself a datatype (Z3: not co-variant)")
+-- stderr
+-- exit 1

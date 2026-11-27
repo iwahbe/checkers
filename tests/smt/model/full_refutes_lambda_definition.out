@@ -1,0 +1,9 @@
+-- stdout
+z3: sat
+model: (get-model)
+definitions: each taken as terminating, on the word of whoever ran this (`--terminating`)
+fact 1: holds
+the negated goal: holds
+refutes: no (a `lambda`)
+-- stderr
+-- exit 0

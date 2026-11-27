@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: an application with no arguments: nil
+-- stderr
+-- exit 0

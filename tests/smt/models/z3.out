@@ -1,0 +1,50 @@
+-- asked again
+-- stdout
+tests/smt/models/z3/now_unsat: Z3 now answers unsat
+definitions: each taken as terminating, on the word of whoever ran this (`--terminating`)
+2 queries and other files
+  0 neither a query nor an answer (listed above)
+  0 answered `unsat`: no model to check (nothing after `unsat` is read)
+  0 answered `unknown`: no model to check (nothing after `unknown` is read)
+  1 where Z3 run now doesn't answer `sat`, or can't be run (with `--z3`; listed above, and fail the run)
+  0 without `(get-value …)`: no values printed (nothing after `sat` is read)
+  0 with a name with `!`, as Z3's own names: not read, and fail the run (listed above)
+  0 whose query, answer or model doesn't read (listed above)
+  0 with a `forall` without `:pattern`: not checked
+  0 with only `forall`s with `:pattern`: not checked
+  0 with an assertion false in Z3's model (listed above)
+  1 where every assertion holds
+      (0 of them with definitions, taken as terminating)
+      (0 of them with a `lambda`, which `refutes` refuses)
+  0 not determined by what Z3 printed, by the first reason:
+  0 where `refutes` disagrees (listed above)
+-- stderr
+-- exit 1
+-- can't run
+-- stdout
+tests/smt/models/z3/holds: can't run tests/smt/models/no-such-program: No such file or directory
+tests/smt/models/z3/now_unsat: can't run tests/smt/models/no-such-program: No such file or directory
+definitions: none taken as terminating (`--terminating` takes each so)
+2 queries and other files
+  0 neither a query nor an answer (listed above)
+  0 answered `unsat`: no model to check (nothing after `unsat` is read)
+  0 answered `unknown`: no model to check (nothing after `unknown` is read)
+  2 where Z3 run now doesn't answer `sat`, or can't be run (with `--z3`; listed above, and fail the run)
+  0 without `(get-value …)`: no values printed (nothing after `sat` is read)
+  0 with a name with `!`, as Z3's own names: not read, and fail the run (listed above)
+  0 whose query, answer or model doesn't read (listed above)
+  0 with a `forall` without `:pattern`: not checked
+  0 with only `forall`s with `:pattern`: not checked
+  0 with an assertion false in Z3's model (listed above)
+  0 where every assertion holds
+      (0 of them with definitions, none called)
+      (0 of them with a `lambda`, which `refutes` refuses)
+  0 not determined by what Z3 printed, by the first reason:
+  0 where `refutes` disagrees (listed above)
+-- stderr
+-- exit 1
+-- no directory
+-- stdout
+-- stderr
+error: `models` takes at least one directory: main models [--terminating] [--z3 PROGRAM] DIR…
+-- exit 1

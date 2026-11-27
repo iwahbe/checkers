@@ -1,0 +1,7 @@
+-- stdout
+z3: unsat
+no model: Z3 answered unsat; the assertions with nothing given:
+definitions: each taken as terminating, on the word of whoever ran this (`--terminating`)
+the negated goal: fails
+-- stderr
+-- exit 0

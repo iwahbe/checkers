@@ -1,0 +1,10 @@
+(set-logic ALL)
+; Two values printed for a function at one point (`x` and `y` are both
+; 1): not read. (The answer is edited.)
+(declare-fun f (Int) Int)
+(declare-const x Int)
+(declare-const y Int)
+(assert (= x y))
+(assert (not false))
+(check-sat)
+(get-value (x y (f x) (f y)))

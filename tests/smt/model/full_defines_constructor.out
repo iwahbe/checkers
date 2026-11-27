@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: a definition of a name the model may not define, or at sorts other than the query's: R
+-- stderr
+-- exit 0

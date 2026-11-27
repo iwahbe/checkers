@@ -25,6 +25,7 @@ import term (Head, Fun, Con, Is, Sel, Num, Boolean, Prim, ConstArr, EmptySeq, Te
 import term (Def, DefKind, Recursive, Plain, Axiom, Command, DeclareSort, DeclareDatatypes, DeclareFun, DefineFuns, Assume)
 import term (Assert)
 import term (Sig, Context, Problem, BadSort, NoCtors, BadApply, Unbound, EmptyLet, ConstantParams, Expected, NoPattern)
+import term (NotWellFounded, NoBaseCase, NotCovariant)
 import term (NamedTwice, PlainInGroup)
 import reserved
 
@@ -1392,6 +1393,11 @@ fn problem_message sig pr -> r : sig~Sig, pr~Problem, r~Bytes
         ConstantParams f  -> b"the constant " ++ shown f.name ++ b" has parameters"
         Expected want got -> b"expected a term of sort " ++ sort_text sig want ++ b", found one of sort " ++ sort_text sig got
         NoPattern         -> b"a `:pattern` needs at least one term"
+        NotWellFounded d  -> b"the datatype " ++ shown d.name ++ b" has no values: each constructor needs a value of a sort that has none"
+        NoBaseCase d      ->
+            b"the datatype " ++ shown d.name
+                ++ b" is not well-founded: every constructor has a field that holds a datatype of its group (also inside an array, a sequence or a declared sort) not yet shown to have a value"
+        NotCovariant d    -> b"the datatype " ++ shown d.name ++ b" is in the index sort of an array in its own fields, which is not allowed"
         NamedTwice n      -> b"an assertion before this one is already named " ++ shown n
         PlainInGroup d    -> shown d.name ++ b" is defined without recursion, so it must be alone, in `define-fun`"
 
@@ -1695,15 +1701,19 @@ export fn render q -> r : q~Query, r~Bytes
 
 # An S-expression without positions, and with symbols without their bars:
 # what `render` keeps of a query.
+# A term as written: a symbol (`|x|` and `x` are one symbol), a numeral,
+# a keyword, or a list. A quoted `|1|` is a symbol, not the numeral 1.
 export enum Shape
     Word w      : w~Bytes
+    Numeric n   : n~Nat
+    Key k       : k~Bytes
     Group items : items~List Shape
 
 export fn shape e -> r : e~SExpr src, r~Shape
     match e
         Leaf (Symbol t _) _ -> Word t
-        Leaf (Keyword k) _  -> Word (b":" ++ k)
-        Leaf (Numeral n) _  -> Word (numeral n)
+        Leaf (Keyword k) _  -> Key k
+        Leaf (Numeral n) _  -> Numeric n
         Node items _        -> Group (list.map shape items)
 
 export fn shapes es -> r : es~List (SExpr src), r~List Shape
@@ -1715,6 +1725,8 @@ export fn shapes es -> r : es~List (SExpr src), r~List Shape
 export fn same sig inp out -> r : sig~Sig, inp~Shape, out~Shape, r~Bool
     match (inp, out)
         (Word a, Word b)                           -> a == b
+        (Numeric a, Numeric b)                     -> a == b
+        (Key a, Key b)                             -> a == b
         (Word c, Group [Word a, Word c2, Word dn]) -> a == b"as" and c == c2 and bare_ctor sig c dn
         (Group xs, Group ys)                       -> same_all sig xs ys
         _                                          -> False
@@ -1738,8 +1750,10 @@ export fn shape_text s -> r : s~Shape, r~Bytes
 
 fn w_shape s acc -> r : s~Shape, acc~List Bytes, r~List Bytes
     match s
-        Word w   -> if len w > 0 and (w[0] == ':' or is_digit w[0]) then w :: acc else w_name w acc
-        Group ss -> b")" :: w_shapes ss True (b"(" :: acc)
+        Word w    -> w_name w acc
+        Numeric n -> numeral n :: acc
+        Key k     -> (b":" ++ k) :: acc
+        Group ss  -> b")" :: w_shapes ss True (b"(" :: acc)
 
 fn w_shapes ss first acc -> r : ss~List Shape, first~Bool, acc~List Bytes, r~List Bytes
     match ss

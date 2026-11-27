@@ -1,0 +1,7 @@
+-- stdout
+z3: sat
+definitions: none taken as terminating (`--terminating` takes each so)
+the negated goal: holds
+refutes: no (recursive definitions not taken as terminating)
+-- stderr
+-- exit 0

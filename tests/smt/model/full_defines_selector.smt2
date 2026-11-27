@@ -1,0 +1,7 @@
+(set-logic ALL)
+; A definition of a selector is not read. (The answer is edited.)
+(declare-datatypes ((B 0)) (((mk (un Int)))))
+(declare-const b B)
+(assert (= (un b) 3))
+(assert (not false))
+(check-sat)
