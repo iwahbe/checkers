@@ -248,13 +248,34 @@ fn array_le_from xs ys i -> r : Ord a, xs~Array a, ys~Array a, i~Nat, i <= len x
 # The first index where two arrays differ, or the shorter one's length.
 fn array_mismatch xs ys -> i : xs~Array a, ys~Array a, i~Nat, i <= len xs, i <= len ys,
                                (i < len xs and i < len ys) implies not (xs[i] == ys[i])
-    __builtin
+    array_mismatch_from xs ys 0
+
+# `array_mismatch`, looking from index `i` on.
+fn array_mismatch_from xs ys i -> r : xs~Array a, ys~Array a, i~Nat, i <= len xs, i <= len ys,
+                                      r~Nat, i <= r, r <= len xs, r <= len ys,
+                                      (r < len xs and r < len ys) implies not (xs[r] == ys[r])
+    decreasing len xs - i
+    if i < len xs and i < len ys and xs[i] == ys[i]
+        array_mismatch_from xs ys (i + 1)
+    else
+        i
 
 # Before the first index where they differ, two arrays are equal.
 lemma array_mismatch_same xs ys k : xs~Array a, ys~Array a, k~Nat, k < array_mismatch xs ys
     ensures xs[k] == ys[k]
     proof
-        __builtin
+        have array_mismatch_from_same xs ys 0 k
+
+lemma array_mismatch_from_same xs ys i k : xs~Array a, ys~Array a, i~Nat, i <= len xs,
+                                           i <= len ys, k~Nat, i <= k,
+                                           k < array_mismatch_from xs ys i
+    ensures xs[k] == ys[k]
+    proof
+        decreasing len xs - i
+        if i < len xs and i < len ys and xs[i] == ys[i] and i < k
+            have array_mismatch_from_same xs ys (i + 1) k
+        else
+            auto
 
 # Elements that are equal don't decide the order: comparing from `i` is
 # comparing from where the arrays first differ.
