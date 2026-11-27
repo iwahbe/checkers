@@ -2875,6 +2875,8 @@ impl Elab {
                 (Tm::Field(Rc::new(xt), cid, idx), fty)
             }
             Val::Error => (Tm::Error, Val::Error),
+            // Unknown because of an error already reported.
+            Val::Neutral(Head::Meta(m), _) if self.follows_error(&m) => (Tm::Error, Val::Error),
             _ => {
                 let shown = self.show_written(cx, &xty);
                 let mut d = Diagnostic::error("E0207", format!("`{shown}` has no field `{}`", name.name), name.span)

@@ -1283,6 +1283,7 @@ Reordered (#520) so that Checkers can run CLI tools before the prover exists.
   - The prover tests need Z3 (#542).
 - A report from Ian is "found X, expected Y" with a `.ck` snippet. It is added as a failing golden test first, then fixed. If Y changes the language, this spec is updated before the code.
 - **Past errors (#599).** Every declaration the parser recovers is type-checked; a function whose body fails to parse keeps its header, so its uses see its signature. A declaration has errors if one of its diagnostics is an error. Set aside, and not reported: the obligations inside a declaration with errors, the obligations and `check`s that mention one (or a definition or type using one, transitively), and the `check`s written with errors. Everything else is proven and run. A program with errors is still never run or built.
+- **Errors that follow from an error.** An expression that fails to check (an unknown name, a module name used as a value) has an error's type, which matches any type and decides none. What the checker would learn from it stays unknown because of that error, and nothing that depends on such an unknown, or on a type with the error in it, is reported. So `walk nothing`, with `walk` taking `Seq s` and `nothing` undefined, is only E0204 at `nothing`; a mismatch involving an unknown already in a reported mismatch, or a missing dictionary, isn't reported either.
 - `UPDATE_GOLDEN=1 cargo test` rewrites `.out` files; every rewritten file is reviewed in the diff before committing.
 
 ---

@@ -374,6 +374,10 @@ pub struct Globals {
     /// another type (#133): neither failed nor guessed, they wait for the
     /// dictionary (level, the two types).
     pub postponed: RefCell<Vec<(usize, Val, Val)>>,
+    /// Unknowns compared with an error: what they are isn't known because
+    /// of an error already reported, so what follows from them isn't
+    /// reported either.
+    pub errored: RefCell<std::collections::HashSet<MetaId>>,
     /// Each type's value parameters that its fields' types are computed
     /// from (#170), once worked out (`value_params_needed`).
     pub value_params: RefCell<HashMap<TyId, std::collections::BTreeSet<usize>>>,
@@ -463,6 +467,7 @@ impl Globals {
             fuel: Cell::new(DEFAULT_FUEL),
             well_known: WellKnown::default(),
             postponed: RefCell::new(Vec::new()),
+            errored: RefCell::new(std::collections::HashSet::new()),
             value_params: RefCell::new(HashMap::new()),
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
@@ -1759,9 +1764,27 @@ pub fn class_type_base(g: &Globals, v: &Val) -> Option<Val> {
     Some(eval(g, &Rc::new(env), b))
 }
 
+/// The unknowns in a term.
+fn metas_in(t: &Tm, out: &mut std::collections::HashSet<MetaId>) {
+    if let Tm::Meta(m) = t {
+        out.insert(*m);
+    }
+    t.any_sub(|s, _| {
+        metas_in(s, out);
+        false
+    });
+}
+
 fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> {
     match (a, b) {
-        (Val::Error, _) | (_, Val::Error) => Ok(()),
+        (Val::Error, Val::Error) => Ok(()),
+        // An error is any type: the unknowns it is compared with stay
+        // unknown, because of it.
+        (Val::Error, other) | (other, Val::Error) => {
+            let mut out = g.errored.borrow_mut();
+            metas_in(&zonk_metas(g, l, &quote(g, l, other)), &mut out);
+            Ok(())
+        }
         (Val::Lam(_, _, _, c1), Val::Lam(_, _, _, c2)) => {
             unify(g, l + 1, &apply_closure(g, c1, Val::var(l)), &apply_closure(g, c2, Val::var(l)))
         }

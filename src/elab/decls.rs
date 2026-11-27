@@ -2803,7 +2803,7 @@ impl Elab {
             // Unknown only for an error reported already (#627 c): a
             // dictionary not found.
             let unknowns = self.unknowns(cx.lvl(), &v);
-            let blamed = !unknowns.is_empty() && unknowns.iter().all(|m| self.blamed.contains(m));
+            let blamed = !unknowns.is_empty() && unknowns.iter().all(|m| self.follows_error(m));
             if has_unsolved(&self.g, cx.lvl(), &v) && !blamed {
                 let fname = self.g.defs[did.0 as usize].name.clone();
                 self.err(
