@@ -128,9 +128,17 @@ fn reading_a_field_of_a_call_does_not_run_it() {
 /// at once, at 242 MB to 256 MB and 412 MB to 416 MB.
 #[cfg(target_os = "linux")]
 fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
-    let file = dir.join(format!("{name}.ck"));
     let chain = vec!["x"; n].join(" + ");
-    let source = format!("module {name}\n\nfn f x -> r : x~Int, r~Int\n    {chain}\n\ncheck f 1 == {n}\n");
+    source_usage(dir, name, &format!("module {name}\n\nfn f x -> r : x~Int, r~Int\n    {chain}\n\ncheck f 1 == {n}\n")).1
+}
+
+/// The CPU time, in milliseconds, and the peak resident memory, in KB, of
+/// `ckc check` on module `name`, as `check_peak_kb` measures them. CPU
+/// time, unlike the phases' times, doesn't count waiting for a CPU, so it
+/// varies less when other tests are running.
+#[cfg(target_os = "linux")]
+fn source_usage(dir: &Path, name: &str, source: &str) -> (f64, u64) {
+    let file = dir.join(format!("{name}.ck"));
     std::fs::write(&file, source).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_ckc"))
         .args(["check", "--no-cache", &format!("{name}.ck")])
@@ -154,7 +162,8 @@ fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
     // `child` is reaped already: dropping it neither waits nor kills.
     drop(child);
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "{name}: ckc failed");
-    usage.ru_maxrss as u64
+    let ms = |t: libc::timeval| t.tv_sec as f64 * 1000.0 + t.tv_usec as f64 / 1000.0;
+    (ms(usage.ru_utime) + ms(usage.ru_stime), usage.ru_maxrss as u64)
 }
 
 /// Code generation keeps memory in proportion to the function: Cranelift's
@@ -182,4 +191,78 @@ fn additions_compile_in_linear_memory() {
         large / 1024,
         second as f64 / first as f64
     );
+}
+
+/// The least CPU time and peak memory of a few runs of `ckc check` on a
+/// function of 2,000, 4,000 and 8,000 `let`s, `let a{i} = a{i-1}{step}`,
+/// over values of type `ty`, with no `check`: only elaboration is measured.
+/// The least of a few runs is the least disturbed by other tests.
+#[cfg(target_os = "linux")]
+fn lets_usage(tag: &str, ty: &str, step: &str) -> [(f64, u64); 3] {
+    let dir = std::env::temp_dir().join(format!("checkers-scaling-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let usage = LETS.map(|n| {
+        let name = format!("{tag}{n}");
+        let mut s = format!("module {name}\n\nexport fn f x -> r : x~{ty}, r~{ty}\n    let a0 = x\n");
+        for i in 1..=n {
+            s += &format!("    let a{i} = a{}{step}\n", i - 1);
+        }
+        s += &format!("    a{n}\n");
+        (0..7).map(|_| source_usage(&dir, &name, &s)).fold((f64::INFINITY, u64::MAX), |(t, m), (t2, m2)| (t.min(t2), m.min(m2)))
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    usage
+}
+
+/// The sizes `lets_usage` measures.
+#[cfg(target_os = "linux")]
+const LETS: [usize; 3] = [2000, 4000, 8000];
+
+/// Linear memory and time for `lets_usage`'s measurements.
+///
+/// Memory: what each doubling adds to the peak, twice as much the second
+/// time for linear memory, four times for quadratic; the fixed part (the
+/// standard library) cancels out. The peak moves in the allocator's steps,
+/// so the second may add up to three times the first.
+///
+/// Time per instruction grows with the memory a run touches, so what a
+/// doubling adds to the time doesn't tell quadratic work from cache misses:
+/// four times the lets may take at most four times as long, as linear work
+/// with any fixed part does.
+#[cfg(target_os = "linux")]
+fn assert_lets_linear(tag: &str, [a, b, c]: [(f64, u64); 3]) {
+    let mb = |kb: u64| kb as f64 / 1024.0;
+    let (first, second) = (mb(b.1) - mb(a.1), mb(c.1) - mb(b.1));
+    let [n0, n1, n2] = LETS;
+    assert!(
+        second <= 3.0 * first,
+        "{tag}: peak memory: {n0} to {n1} lets added {first:.0} MB, {n1} to {n2} added {second:.0} MB"
+    );
+    assert!(c.0 <= 4.0 * a.0, "{tag}: CPU time: {n0} lets took {:.0} ms, {n2} took {:.0} ms", a.0, c.0);
+}
+
+/// A function of n `let`s, each joining a string to the one before. `a{i}`'s
+/// value, `x ++ "a" ++ … ++ "a"`, is i deep, and each `let` after it refers
+/// to it. Shared, the values take memory in proportion to n; copied for each
+/// local that holds one, they took n²/2 (2,000 took 350 MB and 2.8 s to
+/// elaborate, 8,000 took 4.6 GB and 44 s). So did the names of every local in
+/// scope, kept for each operator's message. (2,000 to 4,000 lets add 11 MB
+/// to 18 MB, 4,000 to 8,000 16 MB to 26 MB, and 8,000 take 1.4 to 1.8 times
+/// the time of 2,000; without sharing, 850 MB and 3,396 MB, and 15 times.)
+#[cfg(target_os = "linux")]
+#[test]
+fn a_chain_of_lets_checks_in_linear_time_and_memory() {
+    assert_lets_linear("by_let", lets_usage("by_let", "String", " ++ \"a\""));
+}
+
+/// A function of n `let`s, each adding one to the one before. Each `+` asks
+/// what its operands are known to be at compile time, which bounds its
+/// range. Asked of a local by evaluating and quoting its value, `x + 1 + … +
+/// 1`, each `+` walked every one before it: 8,000 lets took 16 times as
+/// long as 2,000 (91 s and 5.6 s). What a local is known to be is decided
+/// once, from the term that defined it: 1.4 to 1.8 times as long.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_chain_of_additions_in_lets_checks_in_linear_time_and_memory() {
+    assert_lets_linear("by_add", lets_usage("by_add", "Int", " + 1"));
 }

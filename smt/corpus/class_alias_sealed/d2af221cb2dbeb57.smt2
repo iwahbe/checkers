@@ -1,7 +1,0 @@
-(set-option :produce-models true)
-(set-option :timeout 60000)
-(set-option :reproducible-resource-limit 200000)
-(set-logic ALL)
-(declare-fun |class_home.alias.Make Int.make| (Int) Int)
-(assert (not (>= (|class_home.alias.Make Int.make| 5) 0)))
-(check-sat)

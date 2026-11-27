@@ -1,0 +1,27 @@
+error[E0287]: a dictionary of class `Sized` is built only by an instance
+  --> class_through_module_misuse.ck:10:13
+   |
+10 |     let d = sized.Sized
+   |             ^^^^^^^^^^^
+   = help: declare `instance Sized …`; its functions' bodies and lemmas' proofs are checked there
+
+error[E0291]: `sized.Sized.Part` needs the type it is for
+  --> class_through_module_misuse.ck:13:28
+   |
+13 | fn without_type p -> n : p~sized.Sized.Part, n~Int
+   |                            ^^^^^^^^^^^^^^^^ each instance of `Sized` gives its own `Part`
+   = help: write `sized.Sized.Part t` for the type `t`, e.g. `sized.Sized.Part a` under a clause `sized.Sized a`
+
+error[E0206]: module `class_home.sized` has no export named `Missing`
+  --> class_through_module_misuse.ck:19:16
+   |
+19 | instance sized.Missing Box
+   |                ^^^^^^^
+
+error[E0206]: module `class_home.sized` has no export named `Missing`
+  --> class_through_module_misuse.ck:26:39
+   |
+26 | instance sized.Sized (Pair a) : sized.Missing a
+   |                                       ^^^^^^^
+
+class_through_module_misuse.ck: 4 errors, 0 warnings

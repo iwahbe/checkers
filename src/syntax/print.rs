@@ -133,7 +133,7 @@ fn decl(d: &Decl) -> String {
             s + ")"
         }
         DeclKind::Instance { class, tys, context, members } => {
-            let mut s = format!("(instance {}", class.name);
+            let mut s = format!("(instance {}", expr(class, 1));
             for ty in tys {
                 s += &format!(" {}", expr(ty, 1));
             }

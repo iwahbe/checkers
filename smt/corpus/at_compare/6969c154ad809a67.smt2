@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-fun |#at_compare.near| (Int Int) Bool)
+(declare-const |#x#0| Int)
+(declare-const |#y#1| Int)
+(assert (= (|#at_compare.near| |#x#0| |#y#1|) false))
+(assert (= (|#at_compare.near| 0 |#y#1|) true))
+(assert (not false))
+(check-sat)
+(get-value (|#x#0| |#y#1|))
+;; reachable?

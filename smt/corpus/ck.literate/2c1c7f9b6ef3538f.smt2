@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-datatypes ((|Tuple2| 2)) ((par (T0 T1) ((|tuple2| (|tuple2.0| T0) (|tuple2.1| T1))))))
+(declare-datatypes ((|#std.prelude.List| 1)) ((par (|#T0|) ((|#std.prelude.Nil|) (|#std.prelude.Cons| (|#std.prelude.Cons.0| |#T0|) (|#std.prelude.Cons.1| (|#std.prelude.List| |#T0|)))))))
+(declare-const |#ls#1| (|#std.prelude.List| (|Tuple2| (Seq Int) Int)))
+(assert (=> (|is-#std.prelude.Cons| |#ls#1|) (>= (|tuple2.1| (|#std.prelude.Cons.0| |#ls#1|)) 0)))
+(assert (= |#ls#1| (as |#std.prelude.Nil| (|#std.prelude.List| (|Tuple2| (Seq Int) Int)))))
+(assert (not false))
+(check-sat)
+(get-value (|#ls#1|))
+;; reachable?

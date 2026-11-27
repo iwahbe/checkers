@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-sort |#s#0| 0)
+(declare-datatypes ((|#std.prelude.List| 1)) ((par (|#T0|) ((|#std.prelude.Nil|) (|#std.prelude.Cons| (|#std.prelude.Cons.0| |#T0|) (|#std.prelude.Cons.1| (|#std.prelude.List| |#T0|)))))))
+(declare-datatypes ((|#type_clause_nested.Packed| 1)) ((par (|#T0|) ((|#type_clause_nested.Packed| (|#type_clause_nested.Packed.0| |#T0|))))))
+(declare-const |#ps#2| (|#std.prelude.List| (|#type_clause_nested.Packed| |#s#0|)))
+(assert (= |#ps#2| (as |#std.prelude.Nil| (|#std.prelude.List| (|#type_clause_nested.Packed| |#s#0|)))))
+(assert (not false))
+(check-sat)
+(get-value (|#ps#2|))
+;; reachable?

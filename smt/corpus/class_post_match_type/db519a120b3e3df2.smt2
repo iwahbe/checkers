@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-datatypes ((|#class_post_match_type.Countdown| 0)) (((|#class_post_match_type.Countdown| (|#class_post_match_type.Countdown.0| Int)))))
+(declare-const |#c#0| |#class_post_match_type.Countdown|)
+(assert (>= (|#class_post_match_type.Countdown.0| |#c#0|) 0))
+(assert (>= (|#class_post_match_type.Countdown.0| |#c#0|) 0))
+(assert (= (= (|#class_post_match_type.Countdown.0| |#c#0|) 0) true))
+(assert (not false))
+(check-sat)
+(get-value (|#c#0|))
+;; reachable?

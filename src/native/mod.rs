@@ -5,6 +5,7 @@
 
 pub mod codegen;
 pub mod eval;
+pub mod fold;
 pub mod inline;
 pub mod ir;
 pub mod lower;
@@ -12,6 +13,7 @@ pub mod rc;
 pub mod spec;
 pub mod tailrec;
 pub mod unbox;
+pub mod wide;
 
 use crate::core::{DefId, Globals};
 use cranelift_codegen::settings::{self, Configurable};
@@ -216,16 +218,47 @@ pub(crate) fn rc_new(g: &Globals, p: &mut lower::Program) {
 
 /// An in-memory module for this machine, with the runtime's symbols.
 pub(crate) fn jit_module() -> cranelift_jit::JITModule {
-    // Cranelift's tail calls rely on frame pointers.
-    let mut jb = cranelift_jit::JITBuilder::with_flags(
-        &[("opt_level", "speed"), ("preserve_frame_pointers", "true")],
-        cranelift_module::default_libcall_names(),
-    )
-    .expect("a JIT for this machine");
+    jit_module_with(&[])
+}
+
+/// `jit_module`, with some of the runtime's symbols at other addresses.
+fn jit_module_with(instead: &[(&'static str, *const u8)]) -> cranelift_jit::JITModule {
+    let mut jb = jit_builder();
+    jb.symbol("ck_invoke", shared_invoke() as *const u8);
     for (name, ptr) in checkers_rt::symbols() {
+        let ptr = instead.iter().find(|(n, _)| *n == name).map_or(ptr, |(_, p)| *p);
         jb.symbol(name, ptr);
     }
     cranelift_jit::JITModule::new(jb)
+}
+
+fn jit_builder() -> cranelift_jit::JITBuilder {
+    // Cranelift's tail calls rely on frame pointers.
+    cranelift_jit::JITBuilder::with_flags(
+        &[("opt_level", "speed"), ("preserve_frame_pointers", "true")],
+        cranelift_module::default_libcall_names(),
+    )
+    .expect("a JIT for this machine")
+}
+
+/// The Rust-to-native dispatcher depends only on the host's calling
+/// conventions, not on a program. Compile it once for all JIT modules,
+/// including the evaluators created while checking types and staging.
+fn shared_invoke() -> checkers_rt::prog::Invoke {
+    static INVOKE: std::sync::OnceLock<checkers_rt::prog::Invoke> = std::sync::OnceLock::new();
+    *INVOKE.get_or_init(|| {
+        let g = Globals::default();
+        let module = cranelift_jit::JITModule::new(jit_builder());
+        let mut gen = codegen::Gen::new(module, lower::Program::new(&g, None), &g);
+        gen.define_new();
+        gen.m.finalize_definitions().expect("finish the native dispatcher");
+        let code = gen.m.get_finalized_function(gen.invoke);
+        // The dispatcher has the runtime's Invoke signature. Its code
+        // must outlive every program and every thread using it.
+        let invoke = unsafe { std::mem::transmute::<*const u8, checkers_rt::prog::Invoke>(code) };
+        std::mem::forget(gen.m);
+        invoke
+    })
 }
 
 fn dump(e: &lower::E, d: usize) -> String {
@@ -298,20 +331,32 @@ fn dump(e: &lower::E, d: usize) -> String {
 
 /// Compile in memory and run `main` (`checkers run`): the exit code.
 pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args: &[String], threads: usize) -> i32 {
+    run_in(jit_module(), g, staged, main, args, threads)
+}
+
+fn run_in(module: cranelift_jit::JITModule, g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args: &[String], threads: usize) -> i32 {
     let p = prepare(g, staged, main, host_return_words());
+    // The check (§8.9): a compiler bug, and the program doesn't run.
+    if !p.residual.is_empty() {
+        for r in &p.residual {
+            eprintln!("{r}");
+        }
+        return 101;
+    }
     let desc = descriptor(g, &p);
-    let module = jit_module();
-    let mut gen = codegen::Gen::new(module, p, g);
+    let mut gen = codegen::Gen::importing_invoke(module, p, g);
     gen.define_new();
     let main_clo = gen.main_closure();
-    let invoke = gen.invoke;
-    let debug = gen.p.debug.map(|f| gen.func_id(f));
+    let debug = gen.debug_table();
     let mut module = gen.m;
     module.finalize_definitions().expect("finish native code");
-    let debug = debug.map_or(0, |f| module.get_finalized_function(f) as u64);
-    let inv = module.get_finalized_function(invoke);
+    let debug = match debug {
+        Some(codegen::Placed::Word(x)) => x,
+        Some(codegen::Placed::Data(d, o)) => module.get_finalized_data(d).0 as u64 + o as u64,
+        None => 0,
+    };
     let (clo, _) = module.get_finalized_data(main_clo);
-    let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(inv) };
+    let invoke = shared_invoke();
     let main_w = clo as u64;
     let owner = main.0;
     let args = args.to_vec();
@@ -335,6 +380,9 @@ pub fn object(
     isa: std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>,
 ) -> Result<Vec<u8>, String> {
     let p = prepare(g, staged, main, codegen::return_words(&*isa));
+    if !p.residual.is_empty() {
+        return Err(p.residual.join("\n"));
+    }
     let desc = descriptor(g, &p);
     let ob = cranelift_object::ObjectBuilder::new(isa, "checkers_program", cranelift_module::default_libcall_names())
         .map_err(|e| e.to_string())?;
@@ -422,6 +470,41 @@ mod tests {
         }
     }
 
+    /// The shared dispatcher calls code in independent modules at every
+    /// supported arity, including arguments passed on the stack.
+    #[test]
+    fn shared_dispatcher_calls_every_arity() {
+        use checkers_rt::word as w;
+        for offset in [10, 100] {
+            let g = Globals::default();
+            let mut p = lower::Program::new(&g, None);
+            for n in 0..=lower::MAX_ARITY {
+                p.funcs.push(lower::Func {
+                    name: format!("arity_{n}"),
+                    owner: lower::NO_OWNER,
+                    kind: lower::FnKind::Global,
+                    params: (0..n as u32).collect(),
+                    body: if n == 0 { lower::E::Int(offset) } else { lower::E::Var(n as u32 - 1) },
+                    nvars: n as u32,
+                    rets: 1,
+                    bounds: Default::default(),
+                });
+            }
+            let mut gen = codegen::Gen::importing_invoke(jit_module(), p, &g);
+            gen.define_new();
+            gen.m.finalize_definitions().unwrap();
+            let invoke = shared_invoke();
+            for n in 0..=lower::MAX_ARITY {
+                let args: Vec<_> = (0..n).map(|i| w::mk_int(offset + i as i64)).collect();
+                let code = gen.m.get_finalized_function(gen.func_id(n as u32)) as u64;
+                let result = invoke(code, w::ERASED, args.as_ptr(), n as u64);
+                assert_eq!(result, w::mk_int(offset + n.saturating_sub(1) as i64), "arity {n}");
+            }
+            // No values or threads retain this module's code.
+            unsafe { gen.m.free_memory() };
+        }
+    }
+
     /// The functions of a test program in tests/run/, ready to compile.
     fn funcs_of(name: &'static str, f: impl FnOnce(&lower::Program) + Send + 'static) {
         let path = format!("{}/tests/run/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -459,8 +542,46 @@ mod tests {
                 out.dedup();
                 out
             };
-            assert_eq!(arity("lo"), [2]);
+            // `lo`'s copies for a dictionary take its two values; the copy for
+            // `lo 5 3` in `pick`'s copy (both known, §8.9) keeps one.
+            assert_eq!(arity("lo"), [2, 1]);
             assert_eq!(arity("nothing"), [1]);
+        })
+    }
+
+    /// A standard library function called from a program with a value known
+    /// when compiling is specialized on it (§14), as the program's own are
+    /// (tests/run/std_specialized.ck): `take 2 args` calls a copy of `take`
+    /// that takes only the list.
+    #[test]
+    fn std_calls_are_specialized_on_known_values() {
+        funcs_of("std_specialized.ck", |p| {
+            let specs = p.specs.borrow();
+            let arities: Vec<usize> = specs
+                .copies
+                .iter()
+                .filter(|c| p.names[c.of.0 as usize] == "take")
+                .map(|c| {
+                    let (mut n, mut b) = (0, &c.body);
+                    while let crate::core::Tm::Lam(_, _, _, x) = b {
+                        n += 1;
+                        b = x;
+                    }
+                    n
+                })
+                .collect();
+            assert!(arities.contains(&1), "take's copies take {arities:?} parameters");
+        })
+    }
+
+    /// A value given through `std.hint.blackbox` is not known when compiling
+    /// (§8.9, tests/run/blackbox.ck): `main` calls it and adds at run time.
+    #[test]
+    fn blackbox_is_not_folded() {
+        funcs_of("blackbox.ck", |p| {
+            let main = p.funcs.iter().find(|f| f.name == "main").expect("main");
+            let code = dump(&main.body, 0);
+            assert!(code.contains("ckb_hint_blackbox") && code.contains("Prim(Add"), "{code}");
         })
     }
 
@@ -549,6 +670,33 @@ mod tests {
         let found: Vec<&(String, String)> = code.iter().filter(|(n, _)| n == f).collect();
         assert_eq!(found.len(), 1, "functions named `{f}`");
         &found[0].1
+    }
+
+    /// The table of hand-written `Debug` instances is static data, laid out
+    /// when the program is compiled (tests/run/debug_table_static.ck): its
+    /// code is its value, so the runtime is handed the value and runs
+    /// nothing to build it.
+    #[test]
+    fn debug_table_is_static() {
+        funcs_of("debug_table_static.ck", |p| {
+            let f = p.debug.expect("a table of `Debug` instances");
+            assert!(matches!(p.funcs[f as usize].body, lower::E::Static(..)), "{}", dump(&p.funcs[f as usize].body, 0));
+        })
+    }
+
+    /// Known parts of code are computed when compiling (§8.9,
+    /// tests/run/folded.ck): `x < LIMIT * 2` compiles as `x < 2097152`, and
+    /// `scale 3 x` calls a copy of `scale` for `3` whose code is `by_hand`'s,
+    /// the general `scale` not being compiled at all.
+    #[test]
+    fn known_parts_are_computed() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("folded", triple);
+                assert_eq!(code_of(&code, "under"), code_of(&code, "under_number"), "{triple}");
+                assert_eq!(code_of(&code, "scale"), code_of(&code, "by_hand"), "{triple}");
+            }
+        })
     }
 
     /// Code put into a function from another (`at`: a small function
@@ -668,20 +816,101 @@ mod tests {
         })
     }
 
-    /// Small integers' inline paths (tests/run/small_int_edges.ck: overflow
-    /// checks, constants, comparisons branched on) compile for every
-    /// machine, whose overflow-checking instructions differ.
+    /// Integers' inline paths (tests/run/small_int_edges.ck: overflow
+    /// checks, constants, comparisons branched on; wide_int_edges.ck: on
+    /// 128 bits) compile for every machine, whose overflow-checking and
+    /// 128-bit instructions differ.
     #[test]
     fn integer_paths_compile_for_every_machine() {
         crate::with_big_stack(|| {
-            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/small_int_edges.ck");
+            for name in ["small_int_edges.ck", "wide_int_edges.ck"] {
+                let path = format!("{}/tests/run/{name}", env!("CARGO_MANIFEST_DIR"));
+                let text = std::fs::read_to_string(&path).unwrap();
+                let dir = std::path::Path::new(&path).parent().unwrap();
+                let (e, main, staged, report) = crate::ready_to_run(name, &text, dir, false).map_err(|r| r.report).unwrap();
+                assert_eq!(report, "");
+                for (triple, _) in MACHINES {
+                    object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{name}, {triple}: {m}"));
+                }
+            }
+        })
+    }
+
+    /// Calls of the runtime's arithmetic, counted.
+    static ARITHMETIC: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn counted() {
+        ARITHMETIC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    extern "C" fn add(a: u64, b: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_add(a, b)
+    }
+    extern "C" fn sub(a: u64, b: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_sub(a, b)
+    }
+    extern "C" fn natsub(a: u64, b: u64, o: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_natsub(a, b, o)
+    }
+    extern "C" fn mul(a: u64, b: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_mul(a, b)
+    }
+    extern "C" fn div(a: u64, b: u64, o: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_div(a, b, o)
+    }
+    extern "C" fn rem(a: u64, b: u64, o: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_rem(a, b, o)
+    }
+    extern "C" fn neg(a: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_neg(a)
+    }
+    extern "C" fn cmp(a: u64, b: u64) -> i64 {
+        counted();
+        checkers_rt::ops::ck_cmp(a, b)
+    }
+    extern "C" fn eq(a: u64, b: u64, o: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_eq(a, b, o)
+    }
+    extern "C" fn ne(a: u64, b: u64, o: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_ne(a, b, o)
+    }
+
+    /// Numbers within 128 bits (tests/run/wide_int_inline.ck: small
+    /// integers whose operations overflow a word, and two-word numbers)
+    /// are computed in compiled code (the program's 128-bit functions):
+    /// running the program calls none of the runtime's arithmetic.
+    #[test]
+    fn numbers_within_128_bits_need_no_runtime() {
+        crate::with_big_stack(|| {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/wide_int_inline.ck");
             let text = std::fs::read_to_string(path).unwrap();
             let dir = std::path::Path::new(path).parent().unwrap();
-            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("wide_int_inline.ck", &text, dir, false).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
-            for (triple, _) in MACHINES {
-                object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{triple}: {m}"));
-            }
+            let counting: [(&'static str, *const u8); 10] = [
+                ("ck_add", add as *const u8),
+                ("ck_sub", sub as *const u8),
+                ("ck_natsub", natsub as *const u8),
+                ("ck_mul", mul as *const u8),
+                ("ck_div", div as *const u8),
+                ("ck_rem", rem as *const u8),
+                ("ck_neg", neg as *const u8),
+                ("ck_cmp", cmp as *const u8),
+                ("ck_eq", eq as *const u8),
+                ("ck_ne", ne as *const u8),
+            ];
+            let code = run_in(jit_module_with(&counting), &e.g, Some(&staged), main, &[], 1);
+            assert_eq!(code, 0);
+            assert_eq!(ARITHMETIC.load(std::sync::atomic::Ordering::Relaxed), 0, "calls of the runtime's arithmetic");
         })
     }
 }

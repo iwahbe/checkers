@@ -25,7 +25,8 @@
 //! tests/fmt/NAME.ck    → NAME.out is `checkers fmt -` on it: stdout, stderr, exit code
 //!                         (`checkers` is built from tools/checkers.ck with `ckc build`).
 //! tests/tool/NAME.args → each line runs `checkers` with those arguments (`ckc` is
-//!                         this build's); NAME.out is their output.
+//!                         this build's), or, if it starts with `ckc `, this build's
+//!                         `ckc` with the rest; NAME.out is their output.
 //! tests/doc/NAME/     → a package (`.ck` files): NAME.out is `ckc doc` on each
 //!                         file, then every page `checkers doc` writes for it
 //!                         (with a checkers.json, `checkers doc .` run in NAME/);
@@ -43,7 +44,9 @@
 //! tools/, examples/, bench/, stdlib/, smt/, tests/{types,run,stage,stress}: every .ck file must be
 //!                         formatted; every .ck file in the repository must format to a
 //!                         fixed point with the same syntax tree (D93).
-//! examples/*.ck, bench/*.ck → must check with no errors and no warnings.
+//! examples/*.ck, bench/*.ck → must check with no errors and no warnings; those
+//!                         with a `main` are compiled with CHECKERS_RESIDUAL_CHECK=1, as
+//!                         are tools/checkers.ck and every run and stress case (§8.9).
 //! smt/*.ck             → the solver package (#72): each module, its command `main.ck`
 //!                         too, checks with no errors and no warnings.
 //! tests/smt/NAME.smt2  → NAME.out is what `smt/main.ck parse` writes for it: the
@@ -93,6 +96,9 @@ fn run_native(args_path: &Path, threads: usize) -> String {
     let vars = vars.lines().filter_map(|l| l.split_once('='));
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
         .env("CHECKERS_NO_CACHE", "1")
+        // Every operation on values known when compiling is computed then
+        // (§8.9): checked for each program run.
+        .env("CHECKERS_RESIDUAL_CHECK", "1")
         .envs(vars)
         .arg("run")
         .args(["--threads", &threads.to_string()])
@@ -251,6 +257,7 @@ fn build_tool(pool: &Pool, root: &'static Path, update: bool) -> Outcome {
     let exe = std::env::temp_dir().join(format!("checkers-golden-{}-tool", std::process::id()));
     let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
         .env("CHECKERS_NO_CACHE", "1")
+        .env("CHECKERS_RESIDUAL_CHECK", "1")
         .args(["build", "tools/checkers.ck", "-o"])
         .arg(&exe)
         .current_dir(root)
@@ -286,8 +293,13 @@ fn build_tool(pool: &Pool, root: &'static Path, update: bool) -> Outcome {
                 let mut failures = Vec::new();
                 let mut actual = String::new();
                 for line in fs::read_to_string(&path).unwrap().lines() {
-                    let args: Vec<&str> = line.split_whitespace().collect();
-                    actual += &format!("$ checkers {line}\n{}", shown(&run_with(&exe.0, &args, b"", root)));
+                    let (tool, rest) = match line.strip_prefix("ckc ") {
+                        Some(rest) => ("ckc", rest),
+                        None => ("checkers", line),
+                    };
+                    let program = if tool == "ckc" { Path::new(env!("CARGO_BIN_EXE_ckc")) } else { exe.0.as_path() };
+                    let args: Vec<&str> = rest.split_whitespace().collect();
+                    actual += &format!("$ {tool} {rest}\n{}", shown(&run_with(program, &args, b"", root)));
                 }
                 compare(root, &path.with_extension("out"), &actual, update, &mut failures);
                 (1, failures)
@@ -774,6 +786,7 @@ fn golden() {
             let exe = Removed(std::env::temp_dir().join(format!("checkers-golden-{}-{args_name}", std::process::id())));
             let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
                 .env("CHECKERS_NO_CACHE", "1")
+                .env("CHECKERS_RESIDUAL_CHECK", "1")
                 .args(["build", program, "-o"])
                 .arg(&exe.0)
                 .current_dir(root)
@@ -826,6 +839,33 @@ fn golden() {
     }
 
     smt_package(&pool, root, update);
+
+    // Every example and benchmark with a `main` compiled with the check on
+    // (§8.9): every operation on values known when compiling is computed then.
+    let mut i = 0;
+    for dir in ["examples", "bench"] {
+        for path in ck_files(&root.join(dir)) {
+            if !fs::read_to_string(&path).unwrap().lines().any(|l| l.starts_with("export ") && l.contains("fn main ")) {
+                continue;
+            }
+            pool.add((11, i), format!("{} compiled", rel(&path)), move |_| {
+                let exe = Removed(std::env::temp_dir().join(format!("checkers-golden-{}-folded-{i}", std::process::id())));
+                let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+                    .env("CHECKERS_NO_CACHE", "1")
+                    .env("CHECKERS_RESIDUAL_CHECK", "1")
+                    .arg("build")
+                    .arg(&path)
+                    .arg("-o")
+                    .arg(&exe.0)
+                    .current_dir(root)
+                    .output()
+                    .expect("run ckc build");
+                let failed = !built.status.success();
+                (1, if failed { vec![format!("── build {} ──\n{}", path.display(), String::from_utf8_lossy(&built.stderr))] } else { vec![] })
+            });
+            i += 1;
+        }
+    }
 
     let start = std::time::Instant::now();
     let (count, failures) = pool.run(threads);

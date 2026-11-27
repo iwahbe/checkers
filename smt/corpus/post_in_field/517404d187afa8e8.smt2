@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-datatypes ((|#std.prelude.List| 1)) ((par (|#T0|) ((|#std.prelude.Nil|) (|#std.prelude.Cons| (|#std.prelude.Cons.0| |#T0|) (|#std.prelude.Cons.1| (|#std.prelude.List| |#T0|)))))))
+(declare-datatypes ((|#post_in_field.Shape| 0)) (((|#post_in_field.Full| (|#post_in_field.Full.0| (Seq Int))) (|#post_in_field.Hollow|))))
+(declare-fun |#std.array.from_list<Int>| ((|#std.prelude.List| Int)) (Seq Int))
+(declare-fun |#post_in_field.full| () |#post_in_field.Shape|)
+(declare-const |#$xs#1| (Seq Int))
+(assert (= |#post_in_field.full| ((as |#post_in_field.Full| |#post_in_field.Shape|) |#$xs#1|)))
+(assert (not false))
+(check-sat)
+;; reachable?

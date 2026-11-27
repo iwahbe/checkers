@@ -1,0 +1,14 @@
+error[E0213]: `make` is a module, not a value
+  --> class_names_by_class.ck:18:5
+   |
+18 |     make n
+   |     ^^^^
+   = help: use one of its exports, e.g. `make.name`
+
+error[E0204]: unknown name `pick`
+  --> class_names_by_class.ck:21:5
+   |
+21 |     pick n
+   |     ^^^^ not found
+
+class_names_by_class.ck: 2 errors, 0 warnings

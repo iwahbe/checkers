@@ -1,0 +1,8 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-datatypes ((|#std.prelude.List| 1)) ((par (|#T0|) ((|#std.prelude.Nil|) (|#std.prelude.Cons| (|#std.prelude.Cons.0| |#T0|) (|#std.prelude.Cons.1| (|#std.prelude.List| |#T0|)))))))
+(define-funs-rec ((|#refined_fn_generic_pre_named.nonempty<Int>| ((p1 (|#std.prelude.List| Int))) Bool)) ((ite (|is-#std.prelude.Nil| p1) false true)))
+(assert (not (|#refined_fn_generic_pre_named.nonempty<Int>| ((as |#std.prelude.Cons| (|#std.prelude.List| Int)) 1 (as |#std.prelude.Nil| (|#std.prelude.List| Int))))))
+(check-sat)
