@@ -672,6 +672,8 @@ fn pick o -> r : o~Option Int, r~Int,
 
 Blank and comment-only lines are ignored for layout.
 
+**No block inside brackets.** Inside brackets lines continue, so no block can start there: a `match`, a `when`, a multi-line `if` (one without `then`) and a `let` (a block's statement, as in a lambda's block body) inside `(…)`, `[…]`, `{…}` or a template's hole are E0125, reported at the keyword. Bind the value first, on a line of its own (`let x = match …`), or write an `if` on one line (`if c then a else b`).
+
 **Comments:** `#` to end of line.
 
 **Identifiers:**
@@ -756,7 +758,7 @@ apat        ::= '_' | lname | literal | Uname
               | '[' [ pattern { ',' pattern } ] ']'
 ```
 
-`if`, `match`, lambdas and `try` extend as far right as possible; as an argument they need parentheses or `$` (`map (\x -> x + 1) xs`, `f $ \x -> …`).
+`if`, `match`, lambdas and `try` extend as far right as possible; as an argument they need parentheses or `$` (`map (\x -> x + 1) xs`, `f $ \x -> …`). A `match`, a multi-line `if` and a lambda whose body is a block can't be in parentheses (§9.1): as an argument they follow `$`.
 
 ### 9.3 Constraints: the one place types appear (#503)
 
