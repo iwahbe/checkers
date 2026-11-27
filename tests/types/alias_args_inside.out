@@ -1,0 +1,46 @@
+error[E0450]: cannot prove that `x` is a `Above` (`x > 10`)
+  --> alias_args_inside.ck:11:10
+   |
+11 |     Some x
+   |          ^ this must be a `Above`
+   = note: facts in scope: `x > 0`
+   = note: counterexample: x = 1
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `Above`
+
+error[E0450]: cannot prove that `x` is a `Above` (`x > 10`)
+  --> alias_args_inside.ck:14:10
+   |
+14 |     Some x
+   |          ^ this must be a `Above`
+   = note: facts in scope: `x > 0`
+   = note: counterexample: x = 1
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `Above`
+
+error[E0450]: cannot prove `y > 10`, required to call `need`
+  --> alias_args_inside.ck:20:5
+   |
+20 |     need x
+   |     ^^^^^^ `need` requires `y > 10`
+   = note: facts in scope: `x > 0`
+   = note: counterexample: x = 1
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove that `x` is a `Above` (`x > 10`)
+  --> alias_args_inside.ck:29:16
+   |
+29 |     Some (Some x)
+   |                ^ this must be a `Above`
+   = note: facts in scope: `x > 0`
+   = note: counterexample: x = 1
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `Above`
+
+error[E0450]: cannot prove that every `Above 0` is a `Above 10`
+  --> alias_args_inside.ck:32:5
+   |
+32 |     xs
+   |     ^^ `xs` holds `Above 0` values where `Above 10` values are expected
+   = note: it needs `n > 10`
+   = note: counterexample: n = 1
+   = help: give the values the type `Above 10` where they are built, so that each is checked there
+
+alias_args_inside.ck: 5 errors, 0 warnings

@@ -1091,3 +1091,146 @@ pub fn apply_closed(ir: &Ir, args: &[Arc<Ir>]) -> Ir {
     }
     go(b, args, 0)
 }
+
+/// Code shown as the type checker shows a term (`core::show`), at
+/// precedence `p` (0: anywhere, 1: an operand, 2: an argument): a known
+/// lambda's code (§8.9), with `names` the text of each variable in scope
+/// (the values it captured, then its parameters'). Erased arguments aren't
+/// shown; a variable is named as it is bound, the first of `x`, `y`, `z`,
+/// `w`, `x1`, … not in scope.
+pub fn show_code(g: &Globals, ir: &Ir, names: &mut Vec<String>, p: u8) -> String {
+    let paren = |c: bool, s: String| if c { format!("({s})") } else { s };
+    let fresh = |names: &Vec<String>| {
+        (0..).map(|k| if k < 4 { ["x", "y", "z", "w"][k].to_string() } else { format!("{}{}", ["x", "y", "z", "w"][k % 4], k / 4) }).find(|x| !names.contains(x)).expect("a name")
+    };
+    let con_name = |c: ConId| g.cons[c.0 as usize].name.to_string();
+    match ir {
+        Ir::Var(i) => names.get(names.len().wrapping_sub(1 + i)).cloned().unwrap_or_else(|| "_".into()),
+        Ir::Global(d) => g.defs.get(d.0 as usize).map_or_else(|| "_".into(), |i| i.name.to_string()),
+        Ir::Erased | Ir::Fail(_) => "_".into(),
+        Ir::Lit(Lit::Num(n)) => n.to_string(),
+        Ir::Lit(Lit::Big(s)) => s.to_string(),
+        Ir::Lit(Lit::Str(s)) => format!("{s:?}"),
+        Ir::Lit(Lit::Bytes(b)) => format!("b{:?}", String::from_utf8_lossy(b)),
+        Ir::Lam(_, b) => {
+            let x = fresh(names);
+            names.push(x.clone());
+            let s = format!("\\{x} -> {}", show_code(g, b, names, 0));
+            names.pop();
+            paren(p > 0, s)
+        }
+        Ir::Call(h, args) => {
+            let args: Vec<&Arc<Ir>> = args.iter().filter(|a| !matches!(***a, Ir::Erased)).collect();
+            if args.is_empty() {
+                return show_code(g, h, names, p);
+            }
+            let mut s = show_code(g, h, names, 2);
+            for a in args {
+                s += " ";
+                s += &show_code(g, a, names, 2);
+            }
+            paren(p > 1, s)
+        }
+        Ir::Let(v, b) => {
+            let vs = show_code(g, v, names, 0);
+            let x = fresh(names);
+            names.push(x.clone());
+            let s = format!("let {x} = {vs}; {}", show_code(g, b, names, 0));
+            names.pop();
+            paren(p > 0, s)
+        }
+        Ir::Tuple(xs) => format!("({})", xs.iter().map(|x| show_code(g, x, names, 0)).collect::<Vec<_>>().join(", ")),
+        Ir::Proj(x, i, _) | Ir::Field(x, i) => format!("{}.{i}", show_code(g, x, names, 2)),
+        Ir::At(_, x) => show_code(g, x, names, p),
+        Ir::ConFn(c) => con_name(*c),
+        Ir::Con(c, xs) => {
+            let xs: Vec<&Arc<Ir>> = xs.iter().filter(|a| !matches!(***a, Ir::Erased)).collect();
+            if Some(*c) == g.well_known.cons && xs.len() == 2 {
+                return paren(p > 0, format!("{} :: {}", show_code(g, xs[0], names, 2), show_code(g, xs[1], names, 1)));
+            }
+            if xs.is_empty() {
+                return if Some(*c) == g.well_known.nil { "[]".into() } else { con_name(*c) };
+            }
+            let args: Vec<String> = xs.iter().map(|x| show_code(g, x, names, 2)).collect();
+            paren(p > 1, format!("{} {}", con_name(*c), args.join(" ")))
+        }
+        Ir::Prim(op, xs, _) => {
+            let sym = match op {
+                Op::Add => "+",
+                Op::Sub => "-",
+                Op::Mul => "*",
+                Op::Div => "/",
+                Op::Rem => "%",
+                Op::Eq => "==",
+                Op::Ne => "!=",
+                Op::Lt => "<",
+                Op::Le => "<=",
+                Op::Gt => ">",
+                Op::Ge => ">=",
+                Op::Concat => "++",
+                _ => "",
+            };
+            match (op, xs.as_slice()) {
+                (_, [a, b]) if !sym.is_empty() => paren(p > 0, format!("{} {sym} {}", show_code(g, a, names, 2), show_code(g, b, names, 2))),
+                (Op::Neg, [a]) => format!("-{}", show_code(g, a, names, 2)),
+                (Op::Index, [a, i, ..]) => format!("{}[{}]", show_code(g, a, names, 2), show_code(g, i, names, 0)),
+                _ => {
+                    let name = if matches!(op, Op::Len) { "len".to_string() } else { format!("{op:?}").to_lowercase() };
+                    let args: Vec<String> = xs.iter().map(|x| show_code(g, x, names, 2)).collect();
+                    paren(p > 1, format!("{name} {}", args.join(" ")))
+                }
+            }
+        }
+        Ir::Par(xs) => paren(p > 1, format!("par ({})", xs.iter().map(|x| show_code(g, x, names, 0)).collect::<Vec<_>>().join(", "))),
+        Ir::Case(s, c) => {
+            let wk = &g.well_known;
+            let arm = |con: Option<ConId>| c.branches.iter().find(|(b, n, _)| Some(*b) == con && *n == 0).map(|(_, _, b)| b);
+            if let (Some(t), Some(f), true) = (arm(wk.true_con), arm(wk.false_con), c.branches.len() == 2) {
+                let s = format!("if {} then {} else {}", show_code(g, s, names, 0), show_code(g, t, names, 0), show_code(g, f, names, 0));
+                return paren(p > 0, s);
+            }
+            paren(p > 0, format!("match {} …", show_code(g, s, names, 0)))
+        }
+        Ir::Static(v, id) => show_static(g, v, *id, p),
+    }
+}
+
+/// Static data shown as `show_code` shows code. Recursive over the value's
+/// depth: code holds small values.
+fn show_static(g: &Globals, v: &Arc<super::lower::Static>, id: u32, p: u8) -> String {
+    use super::lower::SNode;
+    use checkers_rt::word as w;
+    let paren = |c: bool, s: String| if c { format!("({s})") } else { s };
+    match v.node(id) {
+        SNode::Word(x) if w::is_int(*x) => w::int_of(*x).to_string(),
+        SNode::Word(x) if *x == w::UNIT => "()".into(),
+        SNode::Word(x) if *x & 7 == 2 => {
+            let c = ConId((*x >> 3) as u32);
+            if Some(c) == g.well_known.nil { "[]".into() } else { g.cons[c.0 as usize].name.to_string() }
+        }
+        SNode::Word(_) => "_".into(),
+        SNode::Big(n) => n.to_string(),
+        SNode::Bytes(b) => match std::str::from_utf8(b) {
+            Ok(s) => format!("{s:?}"),
+            Err(_) => format!("b{:?}", String::from_utf8_lossy(b)),
+        },
+        SNode::Global(d) => g.defs[*d as usize].name.to_string(),
+        SNode::ConFn(c) => g.cons[*c as usize].name.to_string(),
+        SNode::Lam(code) => show_code(g, &code.ir, &mut Vec::new(), p),
+        SNode::Code(_) => "<function>".into(),
+        SNode::Array { elems, .. } => format!("[{}]", elems.iter().map(|e| show_static(g, v, *e, 0)).collect::<Vec<_>>().join(", ")),
+        SNode::Obj { kind, fields, .. } if *kind == w::K_TUPLE => format!("({})", fields.iter().map(|e| show_static(g, v, *e, 0)).collect::<Vec<_>>().join(", ")),
+        SNode::Obj { kind, tag, fields } if *kind == w::K_CON => {
+            let c = ConId(*tag as u32);
+            if Some(c) == g.well_known.cons && fields.len() == 2 {
+                return paren(p > 0, format!("{} :: {}", show_static(g, v, fields[0], 2), show_static(g, v, fields[1], 1)));
+            }
+            let args: Vec<String> = fields.iter().filter(|f| !matches!(v.node(**f), SNode::Word(x) if *x == w::ERASED)).map(|f| show_static(g, v, *f, 2)).collect();
+            paren(p > 1 && !args.is_empty(), format!("{} {}", g.cons[c.0 as usize].name, args.join(" ")).trim_end().to_string())
+        }
+        SNode::Obj { fields, .. } => {
+            let parts: Vec<String> = fields.iter().map(|f| show_static(g, v, *f, 2)).collect();
+            paren(p > 1, parts.join(" "))
+        }
+    }
+}

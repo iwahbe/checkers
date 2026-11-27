@@ -255,9 +255,18 @@ impl Known {
                 Node::Unit | Node::Erased => out.push_str("()"),
                 Node::Closure(Code::Def(d)) => out.push_str(&g.defs[d.0 as usize].name),
                 Node::Closure(Code::Con(c)) => out.push_str(&g.cons[c.0 as usize].name),
-                // As `debug` shows a function value: a lambda has no name.
-                Node::Closure(Code::Lam(_)) => out.push_str("<function>"),
-                Node::Pap(xs) if matches!(self.node(xs[0]), Node::Closure(Code::Lam(_))) => out.push_str("<function>"),
+                // A lambda: its code, the values it captured put in.
+                Node::Closure(Code::Lam(code)) => out.push_str(&crate::native::ir::show_code(g, &code.ir, &mut Vec::new(), p)),
+                Node::Pap(xs) if matches!(self.node(xs[0]), Node::Closure(Code::Lam(c)) if xs.len() - 1 <= c.captured) => {
+                    let Node::Closure(Code::Lam(code)) = self.node(xs[0]) else { unreachable!() };
+                    let mut names: Vec<String> = xs[1..].iter().map(|x| self.show(g, *x, 2)).collect();
+                    let mut body: &crate::native::ir::Ir = &code.ir;
+                    for _ in 1..xs.len() {
+                        let crate::native::ir::Ir::Lam(_, b) = body else { unreachable!("a lambda per captured value") };
+                        body = b;
+                    }
+                    out.push_str(&crate::native::ir::show_code(g, body, &mut names, p));
+                }
                 Node::Pap(xs) => {
                     let mut parts = Vec::new();
                     if p > 1 {

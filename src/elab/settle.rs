@@ -1,9 +1,9 @@
 //! A module's own functions proved on demand (§8.9): a value known at
-//! compile time may need a function of the module being checked, which
-//! runs only once it is proved. Its recursive group and every function it
-//! reaches are proved then, in dependency order, their termination and
-//! their obligations, and the proofs phase uses those proofs rather than
-//! asking again.
+//! compile time may need a function of the module being checked, or of a
+//! module being proved (an imported one too), which runs only once it is
+//! proved. Its recursive group and every function it reaches are proved
+//! then, in dependency order, their termination and their obligations, and
+//! the proofs phase uses those proofs rather than asking again.
 
 use super::*;
 
@@ -38,9 +38,10 @@ impl Early {
 }
 
 impl Elab {
-    /// May `d`, of the module being checked, run at compile time? Only once
-    /// it is proved: its recursive group and every function it reaches,
-    /// each group proved here, dependencies first, if not already.
+    /// May `d`, of the module being checked or proved, run at compile time?
+    /// Only once it is proved: its recursive group and every function it
+    /// reaches in its module, each group proved here, dependencies first,
+    /// if not already.
     pub fn settle(&self, d: DefId) -> bool {
         {
             let early = self.early.borrow();
@@ -51,8 +52,9 @@ impl Elab {
                 return false;
             }
         }
-        // What `d` reaches in this module, and the calls between them.
-        let mine = |x: DefId| self.g.defs.get(x.0 as usize).is_some_and(|i| *i.module == *self.cur);
+        // What `d` reaches in its module, and the calls between them.
+        let module = self.g.defs[d.0 as usize].module.clone();
+        let mine = |x: DefId| self.g.defs.get(x.0 as usize).is_some_and(|i| i.module == module);
         let mut nodes: Vec<DefId> = vec![d];
         let mut index: HashMap<DefId, usize> = HashMap::from([(d, 0)]);
         let mut edges: Vec<Vec<usize>> = Vec::new();
@@ -83,7 +85,7 @@ impl Elab {
                 return false;
             }
             self.early.borrow_mut().proving.extend(members.iter().copied());
-            let ok = members.iter().all(|m| !self.early.borrow().unsettled.contains(m)) && self.settle_group(&members);
+            let ok = members.iter().all(|m| !self.early.borrow().unsettled.contains(m)) && self.settle_group(&module, &members);
             let mut early = self.early.borrow_mut();
             for m in &members {
                 early.proving.remove(m);
@@ -100,9 +102,9 @@ impl Elab {
         true
     }
 
-    /// Prove one recursive group of the module's functions, whose callees
-    /// in the module are proved: false if it can't be, now.
-    fn settle_group(&self, members: &[DefId]) -> bool {
+    /// Prove one recursive group of module `module`'s functions, whose
+    /// callees in the module are proved: false if it can't be, now.
+    fn settle_group(&self, module: &str, members: &[DefId]) -> bool {
         let set: HashSet<DefId> = members.iter().copied().collect();
         // Each one checked already, a function or a constant: not a
         // constant whose value needs itself, nor one waiting for its body.
@@ -113,44 +115,58 @@ impl Elab {
                 return false;
             }
         }
-        // Where they are: no error there, and nothing waiting for the
-        // module's end (dictionaries settled only once every body is checked).
+        // Where they are: no error there.
         let spans: Vec<Span> = self
             .decl_spans
-            .get(&self.cur)
+            .get(module)
             .map(|ds| ds.iter().filter(|(_, s)| matches!(s, Some(Sym::Def(x)) if set.contains(x))).map(|(sp, _)| *sp).collect())
             .unwrap_or_default();
         let inside = |s: Span| spans.iter().any(|d| d.start <= s.start && s.end <= d.end);
-        if self.diags.iter().any(|(m, d)| *m == self.cur && d.is_error() && inside(d.span)) {
+        if self.diags.iter().any(|(m, d)| m == module && d.is_error() && inside(d.span)) {
             return false;
         }
         let owned = |o: &Option<DefId>, s: Span| o.is_some_and(|o| set.contains(&o)) || inside(s);
-        let waiting = self.pending_class_pres.iter().any(|p| owned(&p.owner, p.span))
-            || self.class_calls.iter().any(|p| owned(&p.owner, p.span))
-            || self.class_local_calls.iter().any(|(_, p)| owned(&p.owner, p.span))
-            || self.alias_dicts.iter().any(|a| owned(&a.owner, a.span))
-            || self.class_value_uses.iter().any(|u| inside(u.2))
-            || self.waiting.iter().any(|w| inside(w.3));
-        if waiting {
-            return false;
-        }
-        // Termination, as the module's end will check it.
-        let fns: Vec<DefId> = members.iter().copied().filter(|m| self.module_fns.contains(m)).collect();
         let mut guesses = Vec::new();
         let mut measures: Vec<&Obligation> = Vec::new();
-        if !fns.is_empty() {
-            self.decide_memberships();
-            let held = self.promises_so_far();
-            let calls: Vec<CallRec> = self.calls.iter().filter(|c| set.contains(&c.caller)).cloned().collect();
-            let rec_calls: Vec<termination::RecCall> = self.rec_calls.iter().filter(|c| set.contains(&c.caller)).cloned().collect();
-            let v = self.termination_verdict(&fns, calls, &held, &rec_calls);
-            if !v.errors.is_empty() {
+        if self.loading.last().is_some_and(|l| l == module) {
+            // The module is being checked: nothing may wait for its end
+            // (dictionaries settled only once every body is checked), and
+            // termination is checked as its end will check it.
+            let waiting = self.pending_class_pres.iter().any(|p| owned(&p.owner, p.span))
+                || self.class_calls.iter().any(|p| owned(&p.owner, p.span))
+                || self.class_local_calls.iter().any(|(_, p)| owned(&p.owner, p.span))
+                || self.alias_dicts.iter().any(|a| owned(&a.owner, a.span))
+                || self.class_value_uses.iter().any(|u| inside(u.2))
+                || self.waiting.iter().any(|w| inside(w.3));
+            if waiting {
                 return false;
             }
-            for total in &v.measured {
-                measures.extend(self.measure_obs.iter().filter(|(a, b, _)| total.contains(a) && total.contains(b)).map(|(_, _, o)| o));
+            let fns: Vec<DefId> = members.iter().copied().filter(|m| self.module_fns.contains(m)).collect();
+            if !fns.is_empty() {
+                self.decide_memberships();
+                let held = self.promises_so_far();
+                let calls: Vec<CallRec> = self.calls.iter().filter(|c| set.contains(&c.caller)).cloned().collect();
+                let rec_calls: Vec<termination::RecCall> = self.rec_calls.iter().filter(|c| set.contains(&c.caller)).cloned().collect();
+                let v = self.termination_verdict(&fns, calls, &held, &rec_calls);
+                if !v.errors.is_empty() {
+                    return false;
+                }
+                for total in &v.measured {
+                    measures.extend(self.measure_obs.iter().filter(|(a, b, _)| total.contains(a) && total.contains(b)).map(|(_, _, o)| o));
+                }
+                guesses = v.guesses;
             }
-            guesses = v.guesses;
+        } else {
+            // Its end is past: termination was checked there, its errors
+            // are among the module's, its measures' obligations among the
+            // obligations below, and its guessed measures are to prove.
+            let early = self.early.borrow();
+            guesses = self
+                .guess_groups
+                .iter()
+                .filter(|g| g.module == module && g.members.iter().any(|m| set.contains(m)) && !early.guesses.contains(&g.members))
+                .cloned()
+                .collect();
         }
         // Their obligations, those of their signatures too.
         let early = self.early.borrow();
@@ -158,18 +174,18 @@ impl Elab {
             .obligations
             .iter()
             .enumerate()
-            .filter(|(k, o)| o.module == self.cur && owned(&o.owner, o.span) && !early.obs.contains(k))
+            .filter(|(k, o)| o.module == module && owned(&o.owner, o.span) && !early.proved(*k, o))
             .unzip();
         drop(early);
         let n = obs.len();
         obs.extend(measures.iter().copied());
         let gs: Vec<&termination::GuessGroup> = guesses.iter().collect();
-        let Some(proved) = crate::verify::prove_now(self, &self.cur, &obs, &gs) else { return false };
+        let Some(proved) = crate::verify::prove_now(self, module, &obs, &gs) else { return false };
         let mut early = self.early.borrow_mut();
         early.obs.extend(ks);
         early.measures.extend(obs[n..].iter().map(|o| (o.span, o.kind.clone())));
         early.guesses.extend(guesses.into_iter().map(|g| g.members));
-        *early.counts.entry(self.cur.clone()).or_default() += proved;
+        *early.counts.entry(module.to_string()).or_default() += proved;
         true
     }
 
