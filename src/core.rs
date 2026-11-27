@@ -413,6 +413,15 @@ pub struct Globals {
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
     /// The longest identity environment `id_env` gave.
     ids: RefCell<Env>,
+    /// Known values kept across builds (§8.9): their keys and storage.
+    pub known_disk: RefCell<crate::known_cache::KnownCache>,
+    /// Whether `force` keeps what it computes across builds (§8.9): the
+    /// cache is on, and no kept computation is running (one kept value's
+    /// parts aren't kept on their own).
+    pub keeping: Cell<bool>,
+    /// How many more definitions evaluation may unfold before it stops:
+    /// `force_kept`'s first attempt counts its unfoldings with it.
+    pub unfolds_left: Cell<u64>,
 }
 
 #[derive(Default, Clone)]
@@ -494,6 +503,9 @@ impl Globals {
             proved: false,
             fold_work: std::cell::Cell::new(None),
             type_bases: HashMap::new(),
+            known_disk: RefCell::new(Default::default()),
+            keeping: Cell::new(crate::verify::cache_dir().is_some()),
+            unfolds_left: Cell::new(u64::MAX),
         }
     }
 
@@ -762,6 +774,10 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
         }
         g.fuel.set(g.fuel.get() - 1);
     }
+    match g.unfolds_left.get() {
+        0 => return None,
+        n => g.unfolds_left.set(n - 1),
+    }
     let mut r = eval(g, &crate::core::Env::new(), body);
     for e in sp.iter() {
         r = elim(g, r, e.clone());
@@ -793,7 +809,6 @@ fn builtin_value(g: &Globals, info: &DefInfo, sp: &[Elim]) -> Option<Val> {
     }
 }
 
-/// Weak-head normal form: resolve metas and unfold definitions at the head.
 /// Is `v` the type `Nat`, or a refinement of it (`U8`, `Char`)? Aliases are
 /// unfolded one at a time until `Nat` is met (#609): forcing would go past it
 /// to `Int`.
@@ -1070,8 +1085,21 @@ pub fn known_const(g: &Globals, d: DefId) -> Option<Tm> {
     g.known.borrow().get(&d).cloned()
 }
 
+/// Weak-head normal form: resolve metas and unfold definitions at the
+/// head. A closed call that takes `KEEP_STEPS` unfoldings or more is
+/// kept across builds (§8.9, `known_cache::force_kept`).
 pub fn force(g: &Globals, v: Val) -> Val {
-    let mut v = force_meta(g, v);
+    let v = force_meta(g, v);
+    if matches!(v, Val::Neutral(Head::Def(_), _)) && g.keeping.get() {
+        return crate::known_cache::force_kept(g, v);
+    }
+    unfold_all(g, v)
+}
+
+/// `force` of `v`, whose metas at the head are resolved: computed here,
+/// not kept.
+#[inline]
+pub fn unfold_all(g: &Globals, mut v: Val) -> Val {
     while let Some(u) = unfold(g, &v) {
         v = force_meta(g, u);
     }
