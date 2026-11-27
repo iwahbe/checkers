@@ -44,7 +44,7 @@ src/range.rs         constant bounds of integers and their arithmetic: the elabo
 src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (#554, #576, #575, #580, #579, #578, #583)
 src/elab/tyeq.rs     type equations `A == B` (#209): wanted at uses (E0294), given in bodies and `match` arms (classes, representatives), impossible cases
 src/elab/cowns.rs    a `when`'s cowns differ (§8.5): the obligation, types that differ for every instantiation; new cowns from calls (§7.1)
-src/elab/qualify.rs  names in diagnostics: two declarations (or locals) of one name told apart, as the module refers to each (§6 rule 8)
+src/elab/qualify.rs  names in diagnostics: two declarations (or locals) of one name told apart, as the module refers to each (§6 rule 8); another package's private declarations never named (§6 rule 9)
 src/elab/effects.rs  calls with effects (§7.1): given a capability or a `Sched`, each a value of its own to the prover (`Prim::Effect`); builtins never run when compiling (those with effects, `std.hint.blackbox`)
 src/elab/eq.rs       `==` never compares functions: in compiled code, and through type parameters (#614)
 src/elab/descr.rs    showing values by type (#170): which type parameters get descriptors, closed over calls; E0293

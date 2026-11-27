@@ -2513,6 +2513,16 @@ impl Elab {
         })
     }
 
+    /// The operators that stand for the prelude classes' function
+    /// `method` (M24), in order.
+    pub fn spellings(method: &str) -> Vec<&'static str> {
+        [Op::Add, Op::Sub, Op::Mul, Op::Le, Op::Lt, Op::Ge, Op::Gt]
+            .into_iter()
+            .filter(|op| Self::class_op(*op).is_some_and(|(_, m, _, _)| m == method))
+            .map(Op::as_str)
+            .collect()
+    }
+
     /// The prelude class `class`'s function `method`, if `ty` has an
     /// instance of it (or a dictionary of it is in scope) and isn't a
     /// built-in number.

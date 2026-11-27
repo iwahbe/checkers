@@ -1,0 +1,21 @@
+error[E0450]: cannot prove `r`, the postcondition of `by_operator`
+ --> private_std_limit.ck:8:82
+  |
+8 | fn by_operator x y -> r : x~String, y~String, len x.bytes < len y.bytes, r~Bool, r
+  |                                                                                  ^ promised here
+  = note: for the value returned on line 9: `x <= y`
+  = note: facts in scope: `(len x.bytes) < (len y.bytes)`
+  = note: `<=`, `<`, `>=` and `>` on `String` use a private function of `std.prelude`, built into it: here the prover knows only that function's postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
+  = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `r`, the postcondition of `apart`
+  --> private_std_limit.ck:13:72
+   |
+13 | fn apart a b c -> r : a~Instant, b~Instant, c~Instant, a == b, r~Bool, r
+   |                                                                        ^ promised here
+   = note: for the value returned on line 14: `a == c or b == c`
+   = note: facts in scope: `a == b`
+   = note: counterexample: a = b
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+private_std_limit.ck: 2 errors, 0 warnings

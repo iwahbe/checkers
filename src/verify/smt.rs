@@ -117,7 +117,7 @@ fn ty_sym(e: &Elab, t: TyId) -> String {
     sym(&format!("{}.{}", ti.module, ti.name))
 }
 
-fn con_sym(e: &Elab, c: ConId) -> String {
+pub(crate) fn con_sym(e: &Elab, c: ConId) -> String {
     let ci = &e.g.cons[c.0 as usize];
     let ti = &e.g.tys[ci.ty.0 as usize];
     sym(&format!("{}.{}", ti.module, ci.name))
@@ -3444,7 +3444,12 @@ impl<'a> Builder<'a> {
         let mut t = ty;
         let mut k = 0;
         while let Tm::Pi(_, _, _, a, b) = t.clone() {
-            let Some((arg, _)) = args.get(k) else { return out(format!("a partial application of `{}`", info.name)) };
+            let Some((arg, _)) = args.get(k) else {
+                return out(match self.e.hidden_home(&self.user, &qualified) {
+                    Some(home) => format!("a partial application of a private function of `{home}`"),
+                    None => format!("a partial application of `{}`", info.name),
+                });
+            };
             let a = if computed {
                 let v = crate::core::eval(&self.e.g, &crate::core::Env::from(type_vals.clone()), &a);
                 quote(&self.e.g, inner.len(), &self.e.reduce_type(&v))
@@ -3838,7 +3843,10 @@ impl<'a> Builder<'a> {
             }
             Prim::Par => Ok(ts[0].clone()),
             Prim::When => out("a `when`"),
-            Prim::Builtin(n) => out(format!("the builtin `{n}`")),
+            Prim::Builtin(n) => out(match self.e.hidden_home(&self.user, n) {
+                Some(home) => format!("a private function built into `{home}`"),
+                None => format!("the builtin `{n}`"),
+            }),
             Prim::Forall => out("a `forall`"),
             Prim::Effect(_) => out("a call with effects"),
         }
