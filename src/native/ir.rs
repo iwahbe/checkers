@@ -257,9 +257,10 @@ impl<'g> Compiler<'g> {
                     let n = spine.len();
                     let inner = self.at(o).go(&crate::core::rename_free(inner, 0, &|v| v - 1));
                     let call = Ir::Call(Arc::new(shift(&inner, n, 0)), (0..n).rev().map(|i| Arc::new(Ir::Var(i))).collect());
-                    return spine.iter().rev().fold(Ir::At(o, Arc::new(call)), |b, (a, m)| {
-                        let v = if *m == Mult::Zero { Arc::new(self.erased(a)) } else { self.compile(a) };
-                        Ir::Let(v, Arc::new(b))
+                    // Argument `k` is computed under the `let`s of those before it.
+                    return spine.iter().enumerate().rev().fold(Ir::At(o, Arc::new(call)), |b, (k, (a, m))| {
+                        let v = if *m == Mult::Zero { self.erased(a) } else { self.go(a) };
+                        Ir::Let(Arc::new(shift(&v, k, 0)), Arc::new(b))
                     });
                 }
                 // A lambda applied (an instance's function as its dictionary
