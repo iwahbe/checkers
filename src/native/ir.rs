@@ -244,18 +244,13 @@ impl<'g> Compiler<'g> {
                             Tm::App(Rc::new(c), Rc::new(a), Icit::Expl, *m)
                         });
                         let body = Ir::At(o, self.at(o).under(r).compile(&call));
-                        // Argument `j` is computed under the `let`s of those before it.
-                        let run: Vec<Ir> = spine.iter().filter(|(_, m)| *m != Mult::Zero).enumerate().map(|(j, (a, _))| shift(&self.go(a), j, 0)).collect();
-                        return run.into_iter().rev().fold(body, |b, v| Ir::Let(Arc::new(v), Arc::new(b)));
+                        return bind_in_order(spine.iter().filter(|(_, m)| *m != Mult::Zero).map(|(a, _)| self.go(a)).collect(), body);
                     }
                     let n = spine.len();
                     let inner = self.at(o).go(&crate::core::rename_free(inner, 0, &|v| v - 1));
                     let call = Ir::Call(Arc::new(shift(&inner, n, 0)), (0..n).rev().map(|i| Arc::new(Ir::Var(i))).collect());
-                    // Argument `k` is computed under the `let`s of those before it.
-                    return spine.iter().enumerate().rev().fold(Ir::At(o, Arc::new(call)), |b, (k, (a, m))| {
-                        let v = if *m == Mult::Zero { self.erased(a) } else { self.go(a) };
-                        Ir::Let(Arc::new(shift(&v, k, 0)), Arc::new(b))
-                    });
+                    let args = spine.iter().map(|(a, m)| if *m == Mult::Zero { self.erased(a) } else { self.go(a) }).collect();
+                    return bind_in_order(args, Ir::At(o, Arc::new(call)));
                 }
                 // A lambda applied (an instance's function as its dictionary
                 // has it, at a known instance): `let`s, in order, as the
@@ -661,6 +656,13 @@ fn subst(t: &Tm, args: &[Tm], depth: usize) -> Tm {
 
 
 /// Shift the free de Bruijn indices of `ir` from `cutoff` on up by `k`.
+/// `body` under a `let` for each of `args`, the first outermost: argument
+/// `k`, code of the scope outside them all, is computed under the `let`s of
+/// those before it, so its variables move past them.
+fn bind_in_order(args: Vec<Ir>, body: Ir) -> Ir {
+    args.iter().enumerate().rev().fold(body, |b, (k, v)| Ir::Let(Arc::new(shift(v, k, 0)), Arc::new(b)))
+}
+
 pub fn shift(ir: &Ir, k: usize, cutoff: usize) -> Ir {
     fn go(ir: &Ir, k: usize, depth: usize) -> Ir {
         let a = |x: &Arc<Ir>, d: usize| Arc::new(go(x, k, d));
