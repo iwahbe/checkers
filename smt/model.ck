@@ -4957,3 +4957,160 @@ lemma normal_sum_in sig dom ix a b l : sig~Sig, dom~(Nat -> List Sort -> Domain)
                             None    -> have normal_sum sig dom (Arr ix Int) a b == None
                     _                      -> auto
             _                -> auto
+
+# Two different normal forms read differently where `normal_differ` looks.
+
+lemma max_int_above used n : used~List Value, n~Int, list.contains used (Integer n)
+    ensures n <= max_int used
+    proof
+        match used
+            []        -> auto
+            _ :: rest -> if list.head used == Some (Integer n) then auto else have max_int_above rest n
+
+lemma max_element_above used n : used~List Value, n~Nat, list.contains used (Element n)
+    ensures n <= max_element used
+    proof
+        match used
+            []        -> auto
+            _ :: rest -> if list.head used == Some (Element n) then auto else have max_element_above rest n
+
+lemma max_length_above used xs : used~List Value, xs~List Value, list.contains used (Sequence xs)
+    ensures list.length xs <= max_length used
+    proof
+        match used
+            []        -> auto
+            _ :: rest -> if list.head used == Some (Sequence xs) then auto else have max_length_above rest xs
+
+lemma length_repeat n x : n~Nat, x~Value
+    ensures list.length (repeat n x) == n
+    proof
+        decreasing n
+        if n == 0 then auto else have length_repeat (n - 1) x
+
+lemma bases_has used k f : used~List Value, k~Nat, f~Form, list.contains used (ArrayElem k), decode k == Some f
+    ensures list.contains (bases used) f.base
+    proof
+        match used
+            []        -> auto
+            v :: rest ->
+                if v == ArrayElem k
+                    auto
+                else
+                    match v
+                        ArrayElem l ->
+                            match decode l
+                                Some _ -> have bases_has rest k f
+                                None   -> have bases_has rest k f
+                        _           -> have bases_has rest k f
+
+# At an unbounded index sort, `fresh` gives a value none of `used` is.
+lemma fresh_new sig dom s used : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, used~List Value, unbounded sig dom s
+    ensures match fresh sig s used
+        Some v -> not (list.contains used v)
+        None   -> False
+    proof
+        match s
+            Int      ->
+                if list.contains used (Integer (1 + max_int used)) then have max_int_above used (1 + max_int used) else auto
+            Unin _ _ ->
+                if list.contains used (Element (1 + max_element used))
+                    have max_element_above used (1 + max_element used)
+                else
+                    auto
+            Seq e    ->
+                match value_of sig constant_number e
+                    Some d ->
+                        let xs = repeat (1 + max_length used) d
+                        have length_repeat (1 + max_length used) d
+                        if list.contains used (Sequence xs) then have max_length_above used xs else auto
+                    None   -> auto
+            Arr _ w  ->
+                have fresh_new sig dom w (bases used)
+                match fresh sig w (bases used)
+                    Some b ->
+                        let k = code (Form b [])
+                        have decode_code (Form b [])
+                        if list.contains used (ArrayElem k) then have bases_has used k (Form b []) else auto
+            _        -> auto
+
+lemma kind_unbounded sig dom i : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort, index_kind sig dom i == Unbounded
+    ensures unbounded sig dom i
+
+lemma all_listed_keys es st j : es~List Value, st~List (Value, Value), j~Value, all_listed es st, not (list.contains es j)
+    ensures not (list.contains (list.keys st) j)
+    proof
+        match st
+            []        -> auto
+            _ :: rest -> have all_listed_keys es rest j
+
+lemma listed_nonempty sig dom i es : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort, es~List Value,
+                                     index_kind sig dom i == Listed es
+    ensures es != []
+    proof
+        match i
+            Unin u args ->
+                match dom u args
+                    UpTo n -> auto
+                    _      -> auto
+            _           -> auto
+
+# A canonical form at a listed sort stores nothing at the first element.
+lemma listed_first_base others st base first : others~List Value, st~List (Value, Value), base~Value, first~Value,
+                                               st == [] or all_listed others st, not (list.contains others first)
+    ensures read_stores_at st base first == base
+    proof
+        if st == []
+            auto
+        else
+            have all_listed_keys others st first
+            have read_absent st base first
+
+# Two different normal forms read differently at the index `normal_differ`
+# gives, at every index kind.
+lemma normal_differ_differs sig dom ix w a b : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort, a~Nat, b~Nat,
+                                               normal_in sig dom (Arr ix w) a, normal_in sig dom (Arr ix w) b, a != b
+    ensures normal_select a (normal_differ sig dom (Arr ix w) a b) != normal_select b (normal_differ sig dom (Arr ix w) a b)
+    proof
+        let d = normal_differ sig dom (Arr ix w) a b
+        have index_of (Arr ix w) == Some ix
+        match (decode a, decode b)
+            (Some f, Some g) ->
+                have normal_select a d == Some (read_stores_at f.stores f.base d)
+                have normal_select b d == Some (read_stores_at g.stores g.base d)
+                have canonical sig dom ix f.base f.stores
+                have canonical sig dom ix g.base g.stores
+                if f.base != g.base
+                    match index_kind sig dom ix
+                        Listed es ->
+                            have listed_sorted sig dom ix es
+                            have listed_nonempty sig dom ix es
+                            match es
+                                first :: others ->
+                                    have d == first
+                                    have sorted_values_after first others
+                                    have after_absent first others
+                                    have index_kind sig dom ix == Listed (first :: others)
+                                    have list.drop 1 (first :: others) == others
+                                    have f.stores == [] or all_listed others f.stores
+                                    have g.stores == [] or all_listed others g.stores
+                                    have listed_first_base others f.stores f.base first
+                                    have listed_first_base others g.stores g.base first
+                        Unbounded ->
+                            let used = list.keys f.stores ++ list.keys g.stores
+                            have kind_unbounded sig dom ix
+                            have fresh_new sig dom ix used
+                            match fresh sig ix used
+                                Some v ->
+                                    have normal_differ sig dom (Arr ix w) a b == or_any (fresh sig ix used)
+                                    have d == v
+                                    have list.contains_append (list.keys f.stores) (list.keys g.stores) v
+                                    have read_absent f.stores f.base v
+                                    have read_absent g.stores g.base v
+                        Opaque    -> auto
+                else if f.stores == g.stores
+                    have f == g
+                    have one_number sig dom (Arr ix w) a b
+                else
+                    have d == first_difference f.stores g.stores f.base (list.keys f.stores ++ list.keys g.stores)
+                    have diff_key_differs f.stores g.stores f.base
+                    have first_difference_finds f.stores g.stores f.base (list.keys f.stores ++ list.keys g.stores) (diff_key f.stores g.stores)
