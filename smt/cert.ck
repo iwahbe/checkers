@@ -599,9 +599,9 @@ export transparent fn values_among c m ts vs -> r : c~Context, m~Model, ts~List 
 # restricted to the finitely many values these terms need, is a `Model`
 # meeting every premise. In Checkers, `cert_checks` builds one such model
 # for an accepted refutation, and `axiom_premises_ok` shows that no axiom of
-# `c` makes `axioms` unsatisfiable at no values. The same for definitions'
-# equations (`model.definition_axiom`) waits for `term.sort_of`'s
-# inversion lemmas (#85). Today's steps use only
+# `c` makes `axioms` unsatisfiable at no values; `model.definitions_ok`
+# shows the same for `definitions`, every definition's equation being
+# well-sorted. Today's steps use only
 # `facts` and `defined`; `axioms`, `definitions` and `arrays` are there for
 # the theory steps to come (S6b–S6e), so that adding them doesn't change
 # this statement.
