@@ -1,10 +1,10 @@
-# lsp.ck — `checkers lsp`, the language server (SPEC §15.5, D120). It
+# lsp.ck — `checkers lsp`, the language server (SPEC §15.5, #601). It
 # speaks LSP over standard input and output and runs `ckc check --json` on
 # every change, with the open documents as an overlay; a newer change of the
 # same document kills its check in progress. Diagnostics are published after
 # each of the check's phases (types, `check`s, proofs); hover, go to
 # definition, references, highlighting and the outline come from the index
-# of the document's latest check, waiting for it if needed (D127).
+# of the document's latest check, waiting for it if needed (#622).
 
 module lsp
 
@@ -46,7 +46,7 @@ record Span
 
 # A name or token of the index (§15.5): its place, its role, where it is
 # defined, what hovering shows ("" for keywords, comments and so on), and the
-# description of what it refers to ("" when there is none, D128).
+# description of what it refers to ("" when there is none, #617).
 record Entry
     at~Span
     role~String
@@ -387,7 +387,7 @@ partial fn feed input o -> r : input~Bytes, o~File, r~()
     let _ = files.close o
     ()
 
-# Start a check of `doc`, killing its check in progress (D127 e).
+# Start a check of `doc`, killing its check in progress (#622 e).
 partial fn start doc st c -> r : doc~Doc, st~Server, c~Caps, r~Server
     match killer_of doc.path st.killers
         Some k -> proc.kill k
@@ -433,7 +433,7 @@ partial fn kill_all ks : ks~List (String, Killer)
 # One phase of a check: read it, publish it, and go on in a new behaviour, so
 # the publication (on other cowns) needn't wait for the rest of the output.
 # Each behaviour owns the child and its output, and hands them to the next;
-# the last closes and waits for them (D156 k: a cown can't hold them).
+# the last closes and waits for them (#643 k: a cown can't hold them).
 partial fn step o ch acc g root docs c : o~File, ch~Child, acc~Acc, g~Nat, root~String, docs~List Doc, c~Caps
     let sched = c.sched
     let _ = future.fork sched $ \_ ->
@@ -501,7 +501,7 @@ partial fn definition w es docs c -> j : w~Where, es~List Entry, docs~List Doc, 
                 None   -> Null
         None   -> Null
 
-# Where the type of the name at the position is declared (D160).
+# Where the type of the name at the position is declared (#653).
 partial fn type_definition w es docs c -> j : w~Where, es~List Entry, docs~List Doc, c~Caps, j~Json
     match name_at w.doc.path w.line w.col es
         Some e ->
@@ -521,20 +521,20 @@ partial fn occurrences w es -> r : w~Where, es~List Entry, r~List Span
             spans_in w.doc.path all
         None   -> []
 
-# The other places of the name at the position, in this file (D160).
+# The other places of the name at the position, in this file (#653).
 partial fn highlights w es c -> j : w~Where, es~List Entry, c~Caps, j~Json
     match occurrences w es
         []  -> Null
         all -> Arr (list.map (\s -> rpc.obj [("range", range_of w.doc.text s c.utf8)]) all)
 
-# Whether renaming the name at the position can rename every use (D160):
+# Whether renaming the name at the position can rename every use (#653):
 # its range, to edit in place, or why not.
 partial fn prepare_rename w es c -> r : w~Where, es~List Entry, c~Caps, r~Result Json String
     match name_at w.doc.path w.line w.col es
         None   -> Err "there is no name here to rename"
         Some e ->
             # A name in a doc comment's code is indexed apart from the
-            # package (D148 f): what it names decides.
+            # package (#642 f): what it names decides.
             if e.renamable or renamable_def e.def es
                 Ok (range_of w.doc.text e.at c.utf8)
             else
@@ -577,7 +577,7 @@ partial fn word_bytes b i : b~Bytes, i~Nat
 # Reply to request `id`, about the file at `path`, with `f` of the index,
 # from a behaviour on the shared cown (which holds the index) and the
 # output: at once if the index has the file's latest check, else when it
-# does (D127 c).
+# does (#622 c).
 partial fn answer id path f c : id~Json, path~String, f~(List Entry -> Json), c~Caps
     answer_or id path (\es -> Ok (f es)) c
 
@@ -636,7 +636,7 @@ partial fn shut_down id c : id~Option Json, c~Caps
     ()
 
 # The uses of the name under the cursor in the open files' indexes, and its
-# definition if `declaration` (D127 f).
+# definition if `declaration` (#622 f).
 partial fn references w es declaration docs c -> j : w~Where, es~List Entry, declaration~Bool, docs~List Doc,
                                                      c~Caps, j~Json
     match name_at w.doc.path w.line w.col es
@@ -667,7 +667,7 @@ partial fn reply msg c : msg~Json, c~Caps
         turn
     ()
 
-# ── The package's index (D161) ──────────────────────────────────────────────
+# ── The package's index (#648) ──────────────────────────────────────────────
 
 # Reply to request `id` with `f` of the index of every module of `w`'s
 # package (`ckc index`, with the open documents as an overlay), read in a
@@ -719,7 +719,7 @@ partial fn paths_in ss acc -> r : ss~List Span, acc~List String, r~List String
         []        -> list.reverse acc
         s :: rest -> paths_in rest (if list.contains acc s.path then acc else s.path :: acc)
 
-# Rename the name at `w` at each of its places in the package (D161): one
+# Rename the name at `w` at each of its places in the package (#648): one
 # file's edits per path. The new name must be spelled as the old one is (a
 # lower-case or a capitalised name, §9.1), not be a keyword, and not be a
 # name any of those files has already.
@@ -759,7 +759,7 @@ partial fn edits_by paths places new docs c -> r : paths~List String, places~Lis
             let edits = list.map (\s -> rpc.obj [("range", range_of text s c.utf8), ("newText", Str new)]) (spans_in p places)
             (tx.uri_of p, Arr edits) :: edits_by rest places new docs c
 
-# ── Completion (D142) ────────────────────────────────────────────────────────
+# ── Completion (#626) ────────────────────────────────────────────────────────
 
 # Completion at `w`: `ckc complete` on the document, with the open documents
 # as an overlay, its output read in a behaviour of its own; it neither waits
@@ -984,7 +984,7 @@ partial fn formatting doc c -> j : doc~Doc, c~Caps, j~Json
                     ("end", rpc.obj [("line", rpc.num (lines + 1)), ("character", rpc.num 0)])]
                 Arr [rpc.obj [("range", whole), ("newText", Str (as_string out))]]
 
-# A new line's indentation (D158): typed after a line break, the edit that
+# A new line's indentation (#644): typed after a line break, the edit that
 # gives line `line` the indentation the lines before it call for.
 partial fn on_type doc line -> j : doc~Doc, line~Nat, j~Json
     let text = doc.text
@@ -1210,7 +1210,7 @@ partial fn begin input c -> r : input~File, c~Caps, r~(ExitCode, File)
 
 # `checkers lsp`: serve on standard input and output, running `ckc` (with
 # `flags`, a package's) for checks. `main` is a behaviour on its own fiber
-# (D123), so the checks' behaviours run while this loop waits for input.
+# (#610), so the checks' behaviours run while this loop waits for input.
 export partial fn run ckc flags term fs p sched -> code : ckc~String, flags~List String, term~Term, fs~Fs, p~Proc,
                                                           sched~Sched, code~ExitCode
     let out = cown.new () sched

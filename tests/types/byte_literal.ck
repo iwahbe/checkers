@@ -1,7 +1,7 @@
 module byte_literal
 
-# `'x'` is a `U8` literal and `c'x'` a `Char` literal (D19); both mix freely
-# with `Nat` (D38).
+# `'x'` is a `U8` literal and `c'x'` a `Char` literal (#509); both mix freely
+# with `Nat` (#528).
 
 fn shout s -> r : s~String, r~String
     s ++ "!"

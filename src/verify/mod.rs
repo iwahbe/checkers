@@ -6,12 +6,13 @@ use crate::core::quote;
 use crate::diag::Diagnostic;
 use crate::elab::{Elab, ObKind, Obligation, Probe, ProbeKind, Vacuity, VacuityKind, WeakenRole};
 use crate::source::Span;
+use std::collections::HashSet;
 
 #[derive(Clone)]
 pub struct Verified {
     pub diags: Vec<Diagnostic>,
     pub proved: usize,
-    /// Z3 answers asked for, and how many came from the cache (D100).
+    /// Z3 answers asked for, and how many came from the cache (#591).
     pub asked: usize,
     pub reused: usize,
 }
@@ -26,7 +27,7 @@ enum Answer {
 /// the process. SMT-LIB errors come back in the output text instead.
 unsafe extern "C" fn ignore_error(_: z3_sys::Z3_context, _: z3_sys::Z3_error_code) {}
 
-/// The linked-in Z3's version (D46): the release, the same for every build
+/// The linked-in Z3's version (#542): the release, the same for every build
 /// of it (some builds' full version names a commit too).
 pub fn z3_version() -> Option<String> {
     let (mut major, mut minor, mut build, mut rev) = (0, 0, 0, 0);
@@ -35,7 +36,7 @@ pub fn z3_version() -> Option<String> {
     Some(format!("Z3 {major}.{minor}.{build}.{rev}"))
 }
 
-/// Z3's work limit per query (D101): unlike a timeout, it gives the same
+/// Z3's work limit per query (#602): unlike a timeout, it gives the same
 /// answer on every machine and at any load. Twice the work the hardest
 /// answer in the repository needs (a counterexample in `tests/run/echo.ck`,
 /// 3 050 000, 11/10/2026); the hardest proof needs 154 000.
@@ -45,7 +46,7 @@ pub const RLIMIT: u64 = 6_000_000;
 /// so giving up on one only costs this much before the next. 1.5 times the
 /// hardest proof they give in the repository (660 000; the next is 255 000).
 pub const QUICK_RLIMIT: u64 = 1_000_000;
-/// For asking whether a branch can run (D144 d): a contradiction among the
+/// For asking whether a branch can run (#633 d): a contradiction among the
 /// facts is found quickly or not at all, and there is one query per branch.
 pub const PROBE_RLIMIT: u64 = 200_000;
 
@@ -56,7 +57,7 @@ pub const PROBE_RLIMIT: u64 = 200_000;
 /// gives up on (77 of them, reported as nothing) mustn't cost much.
 pub const VACUITY_RLIMIT: u64 = 20_000;
 
-/// The work limit each query is tried with first (D154): nearly every
+/// The work limit each query is tried with first (#639): nearly every
 /// answer in the repository needs far less (all but 0.2%), and a query that
 /// can't prove its goal often searches until its limit, so giving up costs
 /// this before the next query.
@@ -97,7 +98,7 @@ fn with_limit(t: &str, limit: u64) -> String {
 /// it cuts off depends on the machine, so it isn't cached.
 pub const SAFETY_MS: u64 = 60_000;
 
-/// Where Z3's answers are cached (D100), if anywhere.
+/// Where Z3's answers are cached (#591), if anywhere.
 static CACHE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 static ASKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static REUSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -125,14 +126,14 @@ pub(crate) fn cache_dir() -> Option<std::path::PathBuf> {
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-// ── Verified modules (D143) ─────────────────────────────────────────────────
+// ── Verified modules (#628) ─────────────────────────────────────────────────
 
 /// What a module verified before contributes: how many obligations it
 /// proved, and its warnings.
 #[derive(Clone)]
 pub struct Remembered {
     pub proved: usize,
-    /// Its proofs phase's warnings (W022, D144).
+    /// Its proofs phase's warnings (W022, #633).
     pub warnings: Vec<Diagnostic>,
 }
 
@@ -149,7 +150,7 @@ const MODULE_HEADER: &str = "checkers module 4";
 
 /// Modules this process has verified, by key: a doc comment's code block
 /// imports the module it is in, and the standard library, all just verified
-/// (D148 k).
+/// (#642 k).
 pub(crate) static VERIFIED: std::sync::Mutex<Option<std::collections::HashMap<String, Remembered>>> = std::sync::Mutex::new(None);
 
 /// The module verified under `key` before, by this process or (beside
@@ -162,7 +163,7 @@ pub fn recall(key: &str) -> Option<Remembered> {
     remembered(key)
 }
 
-/// Each module's key (D143): its name and text, the text of every program
+/// Each module's key (#628): its name and text, the text of every program
 /// or dependency module it depends on, directly or through others (the
 /// modules it imports and those of the instances its checking chose, #272),
 /// the standard library's text (all of it: its modules give one another, and
@@ -387,7 +388,7 @@ fn write_once(path: &std::path::Path, data: &str, what: &str) {
 
 /// Add a query module `module` asked, and Z3's output with the work it used,
 /// to the corpus in `dir`: `dir/MODULE/HASH.smt2` and `dir/MODULE/HASH.z3`,
-/// named by the query's text alone (its ledger hash). `dir/z3-version` is
+/// named by a hash of the query's text alone. `dir/z3-version` is
 /// the Z3 that answered.
 fn add_to_corpus(dir: &std::path::Path, module: &str, query: &str, out: &str, used: &str) {
     let sub = dir.join(module);
@@ -410,7 +411,7 @@ fn ask(module: &str, query: &str) -> Answer {
 fn ask_out(module: &str, query: &str) -> String {
     ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // The same query asked twice in this process: Z3's answer depends only
-    // on the text, so it is reused (D154).
+    // on the text, so it is reused (#639).
     static MEMO: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
     let memo = |out: &str| {
         MEMO.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(query.to_string(), out.to_string());
@@ -471,7 +472,7 @@ fn ask_out(module: &str, query: &str) -> String {
     out
 }
 
-/// The Z3 release Checkers pins (crate `z3-src`, D46). Another release, as a
+/// The Z3 release Checkers pins (crate `z3-src`, #542). Another release, as a
 /// development build may link (`--no-default-features`), can prove less or
 /// take far longer within the same work limit.
 const Z3_PINNED: (u32, u32) = (5, 3);
@@ -650,7 +651,7 @@ fn fnv(s: &str) -> u64 {
 
 /// Functions recursing by `decreasing` whose recursion ends without their
 /// preconditions: every termination obligation in their bodies holds with
-/// the preconditions left out (D118). Recorded on the elaborator, so a
+/// the preconditions left out. Recorded on the elaborator, so a
 /// standard-library function decided once stays decided for its users.
 fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
     use crate::elab::ObKind;
@@ -705,7 +706,7 @@ pub fn proofs(e: &Elab, user: &str) -> Verified {
 }
 
 /// Module `user`'s obligations proved: the first time, by `verify`, unless
-/// a check verified it before under its key (D143: its text, what it
+/// a check verified it before under its key (#628: its text, what it
 /// depends on, the tools), which is then what it gave; after that, as they
 /// were. A module is proved once per program, whether first for a value
 /// known at compile time (§8.9) or in the proofs phase, and a module
@@ -813,7 +814,7 @@ fn verify(e: &Elab, user: &str) -> Verified {
                 // A model of a query without the `forall` facts may break
                 // them: shown only once checked against them.
                 let (shown, broken) = if q.foralls { check_foralls(e, user, o, &defs, &model) } else { (Some(model.clone()), None) };
-                let shown = shown.map(|m| render_model(&m, &q.shown, &q.string_vars, &q.array_vars));
+                let shown = shown.map(|m| render_model(&m, &q.shown, &q.string_vars, &q.array_vars, &private_cons(e, user)));
                 let any = shown.is_some();
                 let mut d = failed(e, o, shown);
                 if let Some(n) = broken {
@@ -866,9 +867,6 @@ fn verify(e: &Elab, user: &str) -> Verified {
 /// once they are (`known_calls`): before the proofs phase chooses what it
 /// proves, so that each obligation is proved once.
 fn settle_known(e: &Elab, user: &str) {
-    if *e.cur != *user {
-        return;
-    }
     let early = e.early.borrow();
     let obs: Vec<&Obligation> = e.obligations.iter().enumerate().filter(|(k, o)| o.module == user && !early.proved(*k, o)).map(|(_, o)| o).collect();
     drop(early);
@@ -943,7 +941,7 @@ fn solve(
     fn lean_of(q: &smt::Query) -> &str {
         q.without_bodies.as_deref().unwrap_or(&q.text)
     }
-    // 1. Everything, with a small work limit (D154): most goals need little
+    // 1. Everything, with a small work limit (#639): most goals need little
     //    work, and this query's answer is final either way: `unsat` is a
     //    proof, `sat` a real counterexample.
     let firsts = ask_produced(user, obs.len(), |k| {
@@ -992,7 +990,7 @@ fn solve(
     // 4. Only the definitions the facts in scope mention: the premises
     //    unfolded, not the goal's functions, which Z3 can unfold without end.
     // 5. Every definition, without the quantified postconditions of other
-    //    functions, which can send Z3 searching (D101).
+    //    functions, which can send Z3 searching (#602).
     // Each with the small work limit, then again with a larger one where Z3
     // gave up: a query that can't prove its goal often searches until its
     // limit.
@@ -1096,7 +1094,7 @@ fn solve(
     (defs, queries, answers, proven)
 }
 
-/// Guess each recursive group's measure (D150): the first candidate, alone
+/// Guess each recursive group's measure (#641): the first candidate, alone
 /// and then in pairs compared lexicographically, that the prover shows every
 /// recursive call makes smaller while staying a natural number. E0301 if
 /// none is.
@@ -1107,7 +1105,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
     }
 }
 
-/// Guess group `gr`'s measure (D150), as `guess_measures`: whether one is
+/// Guess group `gr`'s measure (#641), as `guess_measures`: whether one is
 /// proved.
 fn guess_group(e: &Elab, user: &str, gr: &crate::elab::termination::GuessGroup, v: &mut Verified) -> bool {
     use crate::core::{eval, quote, Lit, Prim, Tm, Val};
@@ -1174,8 +1172,8 @@ fn guess_group(e: &Elab, user: &str, gr: &crate::elab::termination::GuessGroup, 
             }
             let lvl = c.ob.ctx.len();
             let n_caller = e.specs.get(&c.caller).map_or(0, |s| s.n_binders);
-            let here: crate::core::Env = std::rc::Rc::new((0..n_caller).map(Val::var).collect());
-            let there: crate::core::Env = std::rc::Rc::new(c.args.clone());
+            let here: crate::core::Env = (0..n_caller).map(Val::var).collect::<crate::core::Env>();
+            let there: crate::core::Env = crate::core::Env::from(c.args.clone());
             let a: Vec<Tm> = theirs.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &there, t))).collect();
             let b: Vec<Tm> = mine.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &here, t))).collect();
             if same_at.is_none() && c.caller == c.callee && a.iter().zip(&b).all(|(x, y)| format!("{x:?}") == format!("{y:?}")) {
@@ -1193,9 +1191,7 @@ fn guess_group(e: &Elab, user: &str, gr: &crate::elab::termination::GuessGroup, 
             for bj in b.iter().rev() {
                 goal = and(Tm::PrimApp(Prim::Le, vec![Tm::Lit(Lit::Num(0)), bj.clone()]), goal);
             }
-            let env: crate::core::Env = std::rc::Rc::new(
-                c.ob.ctx.iter().enumerate().map(|(l, x)| x.def.clone().unwrap_or_else(|| Val::var(l))).collect(),
-            );
+            let env: crate::core::Env = c.ob.ctx.iter().enumerate().map(|(l, x)| x.def.clone().unwrap_or_else(|| Val::var(l))).collect();
             let mut o = c.ob.clone();
             o.goal = eval(&e.g, &env, &goal);
             let func = e.g.defs[c.caller.0 as usize].name.to_string();
@@ -1423,7 +1419,7 @@ fn vacuity_diag(c: &Vacuity, texts: &[&str], typed: bool) -> Diagnostic {
     Diagnostic::error("E0457", message, c.at).with_label(label).with_help(format!("{never}; {fix}"))
 }
 
-/// W022 (D144 d): the branches of the program's own used code whose facts
+/// W022 (#633 d): the branches of the program's own used code whose facts
 /// contradict each other, by the facts alone.
 fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
     if e.package_of(user) != "." {
@@ -1506,7 +1502,7 @@ fn known_calls(e: &Elab, o: &Obligation) -> Vec<crate::core::Val> {
         let (h, args) = t.spine();
         let Tm::Def(d) = h else { return false };
         let Some(info) = e.g.defs.get(d.0 as usize) else { return false };
-        let empty = std::rc::Rc::new(Vec::new());
+        let empty = crate::core::Env::new();
         let mut ty = crate::core::eval(&e.g, &empty, &info.ty);
         for k in 0..args.len() {
             let Val::Pi(_, _, _, _, c) = crate::core::force(&e.g, ty) else { return false };
@@ -1530,7 +1526,7 @@ fn known_calls(e: &Elab, o: &Obligation) -> Vec<crate::core::Val> {
     for v in std::iter::once(&o.goal).chain(&o.facts) {
         collect(e, &quote(&e.g, lvl, v), 0, &mut found);
     }
-    let env = std::rc::Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+    let env = (0..lvl).map(Val::var).collect::<crate::core::Env>();
     found.into_iter().map(|(t, n)| crate::core::eval(&e.g, &env, &Tm::PrimApp(Prim::Eq, vec![t, Tm::Lit(Lit::Num(n))]))).collect()
 }
 
@@ -1538,7 +1534,7 @@ fn known_calls(e: &Elab, o: &Obligation) -> Vec<crate::core::Val> {
 fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
     let names: Vec<crate::core::Name> = o.ctx.iter().map(|l| l.name.clone()).collect();
     let lvl = o.ctx.len();
-    // `x >= 0` for a `Nat` local restates its type (D121): not shown.
+    // `x >= 0` for a `Nat` local restates its type (#609): not shown.
     let implied: Vec<String> =
         o.ctx.iter().filter(|l| crate::core::is_nat(&e.g, &l.ty)).map(|l| format!("{} >= 0", l.name)).collect();
     let mut shown: Vec<String> = implied.clone();
@@ -1838,15 +1834,23 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     if let Some(n) = facts_note(e, o).filter(|_| !matches!(o.kind, ObKind::Uncovered { .. })) {
         d = d.with_note(n);
     }
-    // Sealed functions from other modules (D54) are only known by their contracts.
+    // Sealed functions from other modules (#537) are only known by their contracts.
     let mut sealed = Vec::new();
     let lvl = o.ctx.len();
     crate::elab::collect_sealed(&quote(&e.g, lvl, &o.goal), &e.g, &o.module, &mut sealed);
-    let sealed_note = sealed.first().map(|d| {
-        let info = &e.g.defs[d.0 as usize];
+    let names: Vec<crate::core::Name> = o.ctx.iter().map(|l| l.name.clone()).collect();
+    let sealed_note = sealed.first().map(|s| {
+        let info = &e.g.defs[s.def.0 as usize];
+        let (subject, plural, hidden) = e.sealed_subject(&o.module, s, &names);
         // A builtin has no body for the prover to see, wherever it is used.
-        let what = if info.body.is_none() { format!("is built into `{}`", info.module) } else { format!("is sealed in `{}`", info.module) };
-        format!("`{}` {what}: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`", info.name)
+        let how = if info.body.is_none() { "built into" } else { "sealed in" };
+        if hidden {
+            let uses = if plural { "use" } else { "uses" };
+            let how = if info.body.is_none() { "built into it" } else { "sealed there" };
+            format!("{subject} {uses} a private function of `{}`, {how}: here the prover knows only that function's postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`", info.module)
+        } else {
+            format!("{subject} is {how} `{}`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`", info.module)
+        }
     });
     match model.filter(|m| !m.is_empty()) {
         // One cown named twice needs no counterexample.
@@ -1903,7 +1907,7 @@ fn returned(e: &Elab, o: &Obligation) -> Option<String> {
 }
 
 /// Check Z3's counterexample against the `forall` facts in scope, which its
-/// query left out (D137): the same query with them given to Z3, quantified,
+/// query left out (#632): the same query with them given to Z3, quantified,
 /// first with the model's values fixed, then free. A model of that query is
 /// a counterexample; without one, the note saying why none is shown.
 fn check_foralls(e: &Elab, user: &str, o: &Obligation, defs: &smt::Defs, model: &str) -> (Option<String>, Option<String>) {
@@ -2042,7 +2046,10 @@ fn short(a: &str) -> String {
     a.rsplit('.').next().unwrap_or(a).to_string()
 }
 
-fn pretty(x: &Sx) -> String {
+/// A value in a model, as Checkers source; a value of a constructor in
+/// `hide` (another package's private one, §6 rule 9) is `…`.
+fn pretty(x: &Sx, hide: &HashSet<String>) -> String {
+    let hidden = |a: &str| hide.contains(a.trim_matches('|'));
     // A byte sequence: a `String` (its UTF-8 bytes, §7.3) or `Bytes`.
     if let Some(b) = seq_bytes(x) {
         return match std::str::from_utf8(&b) {
@@ -2064,6 +2071,7 @@ fn pretty(x: &Sx) -> String {
             // A datatype's stand-in base constructor (`smt::base_sym`): no
             // value a program can build.
             a if a.trim_matches('|').ends_with("#base") => "…".into(),
+            a if hidden(a) => "…".into(),
             a => short(a),
         },
         Sx::List(items) => {
@@ -2071,50 +2079,55 @@ fn pretty(x: &Sx) -> String {
                 Some(Sx::Atom(h)) => h.as_str(),
                 Some(Sx::List(l)) if matches!(l.first(), Some(Sx::Atom(a)) if a == "as") => {
                     if let Some(Sx::Atom(c)) = l.get(1) {
-                        return pretty_con(&short(c), &items[1..]);
+                        if hidden(c) {
+                            return "…".into();
+                        }
+                        return pretty_con(&short(c), &items[1..], hide);
                     }
                     ""
                 }
                 _ => "",
             };
             match head {
-                "-" if items.len() == 2 => format!("-{}", pretty(&items[1])),
+                "-" if items.len() == 2 => format!("-{}", pretty(&items[1], hide)),
                 "as" => match items.get(1) {
-                    Some(Sx::Atom(c)) => pretty_con(&short(c), &[]),
+                    Some(Sx::Atom(c)) if hidden(c) => "…".into(),
+                    Some(Sx::Atom(c)) => pretty_con(&short(c), &[], hide),
                     _ => "?".into(),
                 },
                 h if h.starts_with("|tuple") => {
-                    format!("({})", items[1..].iter().map(pretty).collect::<Vec<_>>().join(", "))
+                    format!("({})", items[1..].iter().map(|x| pretty(x, hide)).collect::<Vec<_>>().join(", "))
                 }
                 "" => "?".into(),
-                h => pretty_con(&short(h), &items[1..]),
+                h if hidden(h) => "…".into(),
+                h => pretty_con(&short(h), &items[1..], hide),
             }
         }
     }
 }
 
-fn pretty_con(c: &str, args: &[Sx]) -> String {
+fn pretty_con(c: &str, args: &[Sx], hide: &HashSet<String>) -> String {
     // A datatype's stand-in base constructor (`smt::base_sym`), or a
     // function giving only it (from an empty type): no value to show.
-    if c.ends_with("#base") || c == "const" && args.len() == 1 && pretty(&args[0]) == "…" {
+    if c.ends_with("#base") || c == "const" && args.len() == 1 && pretty(&args[0], hide) == "…" {
         return "…".into();
     }
     if c == "Nil" && args.is_empty() {
         return "[]".into();
     }
     if c == "Cons" && args.len() == 2 {
-        let mut items = vec![pretty(&args[0])];
+        let mut items = vec![pretty(&args[0], hide)];
         let mut rest = args[1].clone();
         loop {
             match &rest {
                 Sx::List(l) if l.len() == 3 && matches!(&l[0], Sx::Atom(a) if short(a) == "Cons")
                     || l.len() == 3 && matches!(&l[0], Sx::List(x) if matches!(x.get(1), Some(Sx::Atom(a)) if short(a) == "Cons")) =>
                 {
-                    items.push(pretty(&l[1]));
+                    items.push(pretty(&l[1], hide));
                     rest = l[2].clone();
                 }
                 other => {
-                    let tail = pretty(other);
+                    let tail = pretty(other, hide);
                     if tail != "[]" {
                         return format!("{} :: {tail}", items.join(" :: "));
                     }
@@ -2136,7 +2149,7 @@ fn pretty_con(c: &str, args: &[Sx]) -> String {
     let parts: Vec<String> = args
         .iter()
         .map(|a| {
-            let p = pretty(a);
+            let p = pretty(a, hide);
             if p.contains(' ') && !p.starts_with('[') && !p.starts_with('(') {
                 format!("({p})")
             } else {
@@ -2214,7 +2227,43 @@ fn seq_items(x: &Sx) -> Option<Vec<Sx>> {
     }
 }
 
-fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arrays: &[String]) -> String {
+/// The SMT names of the constructors another package than `user`'s keeps
+/// private (§6 rule 9): a counterexample in `user` doesn't show them.
+fn private_cons(e: &Elab, user: &str) -> HashSet<String> {
+    (0..e.g.cons.len())
+        .map(|i| crate::core::ConId(i as u32))
+        .filter(|c| e.hidden_from(user, crate::core::Marked::Con(*c)))
+        .map(|c| smt::con_sym(e, c).trim_matches('|').to_string())
+        .collect()
+}
+
+/// Whether `x` is a value of a constructor in `hide` (another package's
+/// private one, §6 rule 9): one shown as `…` for that reason, not because
+/// the model's value is one no program builds.
+fn is_hidden(x: &Sx, hide: &HashSet<String>) -> bool {
+    let con = match x {
+        Sx::Atom(a) => a,
+        Sx::List(items) => match items.first() {
+            Some(Sx::Atom(h)) if h == "as" => match items.get(1) {
+                Some(Sx::Atom(c)) => c,
+                _ => return false,
+            },
+            Some(Sx::Atom(h)) => h,
+            Some(Sx::List(l)) if matches!(l.first(), Some(Sx::Atom(a)) if a == "as") => match l.get(1) {
+                Some(Sx::Atom(c)) => c,
+                _ => return false,
+            },
+            _ => return false,
+        },
+    };
+    hide.contains(con.trim_matches('|'))
+}
+
+/// The counterexample `text` gives, for the variables `shown`. A value of
+/// a constructor in `hide` (another package's private one, §6 rule 9) is
+/// `…`; a variable whose whole value is one isn't listed, but variables
+/// with the same such value are shown equal, as cowns are.
+fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arrays: &[String], hide: &HashSet<String>) -> String {
     let sx = parse_sx(text);
     let Some(Sx::List(pairs)) = sx.first() else { return String::new() };
     let mut found: Vec<(usize, String)> = Vec::new();
@@ -2226,9 +2275,9 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
                     let v = unlet(v, &[]);
                     let items = if arrays.contains(k) { seq_items(&v) } else { None };
                     let s = match seq_bytes(&v) {
-                        // An array of anything but `U8` (D133).
+                        // An array of anything but `U8` (#624).
                         _ if items.is_some() => {
-                            let shown: Vec<String> = items.unwrap_or_default().iter().map(pretty).collect();
+                            let shown: Vec<String> = items.unwrap_or_default().iter().map(|x| pretty(x, hide)).collect();
                             format!("array.from_list [{}]", shown.join(", "))
                         }
                         // A `String` is its UTF-8 bytes to the solver (§7.3).
@@ -2237,14 +2286,14 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
                             Err(_) => checkers_rt::ops::show_bytes(&b),
                         },
                         Some(b) => checkers_rt::ops::show_bytes(&b),
-                        None => pretty(&v),
+                        None => pretty(&v, hide),
                     };
                     let lvl: usize = k.trim_matches('|').rsplit('#').next().and_then(|n| n.parse().ok()).unwrap_or(pos);
                     // Values of abstract types (capabilities, type variables)
                     // say nothing useful, but which cowns are the same one
                     // does (§8.5): `x = y`.
                     let raw = print_sx(&v);
-                    if raw.contains("std.cown.Cown") && raw.contains("!val!") {
+                    if raw.contains("std.cown.Cown") && raw.contains("!val!") || is_hidden(&v, hide) {
                         match cowns.iter_mut().find(|(r, _, _)| *r == raw) {
                             Some((_, _, names)) => names.push(shown[pos].1.clone()),
                             None => cowns.push((raw, lvl, vec![shown[pos].1.clone()])),
@@ -2274,7 +2323,19 @@ mod tests {
         assert_eq!(results, [None, Some("unsat\n".into()), None, Some("unsat\n".into())]);
     }
 
-    /// A module verified before (D143) is proved for the compile-time gate
+    /// A value the model gives that no program builds (`Bytes` holding
+    /// elements past a byte) is shown as `…`, and its variable is listed:
+    /// only a value of another package's private constructor is left out.
+    #[test]
+    fn an_unshowable_value_is_listed() {
+        use std::collections::HashSet;
+        let model = "((|#xs#0| (seq.unit 300)) (|#ys#1| (seq.++ (seq.unit 300) (seq.unit 1))) (|#t#2| (|std.time.Instant| 5)))";
+        let shown = [("|#xs#0|", "xs"), ("|#ys#1|", "ys"), ("|#t#2|", "t")].map(|(k, n)| (k.to_string(), n.to_string()));
+        let hide: HashSet<String> = ["std.time.Instant".to_string()].into();
+        assert_eq!(super::render_model(model, &shown, &[], &[], &hide), "xs = …, ys = …");
+    }
+
+    /// A module verified before (#628) is proved for the compile-time gate
     /// (§8.9) by what it gave then: no query is built for it again.
     #[test]
     fn a_module_verified_before_builds_no_queries() {

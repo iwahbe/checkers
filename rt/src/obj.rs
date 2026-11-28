@@ -8,7 +8,7 @@ use std::io::{BufRead, Write};
 use std::sync::atomic::AtomicPtr;
 use std::sync::{Arc, Mutex};
 
-/// What a `File` is open on (D112): a reader or a writer (a file on disk, a
+/// What a `File` is open on (#611): a reader or a writer (a file on disk, a
 /// child's pipe), or one of the standard streams, whose buffers it shares
 /// with `std.terminal`.
 pub enum FileState {
@@ -65,7 +65,7 @@ pub fn close_fd(fd: std::os::fd::OwnedFd) -> std::io::Result<()> {
     })
 }
 
-/// A resource for the scheduler (D66): a cown or a future.
+/// A resource for the scheduler (#561): a cown or a future.
 pub struct Cell {
     pub res: crate::sched::Resource,
     pub v: Mutex<W>,
@@ -108,7 +108,7 @@ impl PartialEq for BagEntry {
 
 pub enum Obj {
     Decimal(Decimal),
-    /// Sorted by the values' text (D47, D138): equal values have equal
+    /// Sorted by the values' text (#553, #625): equal values have equal
     /// text, whatever their type.
     Bag(Vec<BagEntry>),
     File(Mutex<Option<FileState>>),

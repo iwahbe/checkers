@@ -1,6 +1,6 @@
 module par_tuple_stress
 
-# `par` whose last component is a tuple gives a flat tuple (D174, D69):
+# `par` whose last component is a tuple gives a flat tuple (#673, #562):
 # `par (10, two 20)` is `(10, 21, 22)`, however it is taken apart.
 
 import std.system (System, ExitCode)

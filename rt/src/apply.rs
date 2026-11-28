@@ -3,7 +3,7 @@
 //! pointer; everything else (partial and over-application) comes here.
 //!
 //! Ownership: `apply` consumes the function and the arguments, as compiled
-//! code does (D74). A closure's code receives the closure itself as its
+//! code does (#567). A closure's code receives the closure itself as its
 //! environment, and consumes it.
 
 use crate::prog::*;
@@ -63,7 +63,7 @@ fn pap(f: W, held: &[W], more: Vec<W>) -> W {
 /// From native code: `f a1 … an`, consuming `f` and the arguments.
 #[no_mangle]
 /// # Safety
-/// Called by native code with valid pointers (D72).
+/// Called by native code with valid pointers (#569).
 pub unsafe extern "C" fn ck_apply(f: W, args: *const W, n: u64) -> W {
     let v = if n == 0 { Vec::new() } else { unsafe { std::slice::from_raw_parts(args, n as usize) }.to_vec() };
     apply(f, v)

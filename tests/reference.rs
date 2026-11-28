@@ -1,5 +1,5 @@
 //! The site's Reference lists every diagnostic the compiler and the tools
-//! report, and nothing else (SPEC D166 c): each code written as a string in
+//! report, and nothing else (SPEC #646 c): each code written as a string in
 //! `src/` or `tools/` has a row in `site/reference/diagnostics.md`.
 
 use std::collections::BTreeSet;

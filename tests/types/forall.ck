@@ -1,6 +1,6 @@
 module forall_hyps
 
-# Named `forall` preconditions (D137): proved where the function is called,
+# Named `forall` preconditions (#632): proved where the function is called,
 # with fresh values; used in the body only by name, with `have`.
 
 fn ordered le x y -> r : le~(Int -> Int -> Bool), x~Int, y~Int,

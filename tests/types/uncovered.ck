@@ -1,4 +1,4 @@
-# A `match` covers the values that can occur (D144): a case left out is an
+# A `match` covers the values that can occur (#633): a case left out is an
 # obligation that it can't occur there.
 module uncovered
 

@@ -1,4 +1,4 @@
-# A resource type may have instances (D156 i): a class function takes a
+# A resource type may have instances (#643 i): a class function takes a
 # resource exactly once, as any function does.
 module resource_instance
 
@@ -11,7 +11,7 @@ instance Sink File
     fn sink f
         close f
 
-# Generic code takes a resource only as `own` (D39): so does a class's
+# Generic code takes a resource only as `own` (#533): so does a class's
 # function that generic code passes it to.
 fn drain x : x~own a, Sink a
     Sink.sink x

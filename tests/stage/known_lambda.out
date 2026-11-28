@@ -1,0 +1,10 @@
+fn by_two xs =
+    apply_all[\x -> x + 4] xs
+
+fn apply_all[\x -> x + 4] xs =
+    match xs
+        [] ->
+            []
+        x :: xs1 ->
+            ((\x -> x + 4) x) :: apply_all[\x -> x + 4] xs1
+

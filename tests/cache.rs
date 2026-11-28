@@ -1,6 +1,6 @@
-//! Z3's answers are cached (D100): a second check reuses them, an entry
+//! Z3's answers are cached (#591): a second check reuses them, an entry
 //! whose query doesn't match exactly is ignored, and `--no-cache` neither
-//! reads nor writes the cache. Verified modules are remembered (D143): a
+//! reads nor writes the cache. Verified modules are remembered (#628): a
 //! module is not verified again while nothing it depends on has changed:
 //! its text, its imports, and the modules of the instances it uses. The
 //! counts are read from `CHECKERS_CACHE_STATS=1`'s lines on standard error.
@@ -29,7 +29,7 @@ fn cache_line(out: &str) -> Option<String> {
     out.lines().find(|l| l.starts_with("cache: ") && !l.contains("modules")).map(str::to_string)
 }
 
-/// Forget the verified modules (D143), so the next check asks Z3 again.
+/// Forget the verified modules (#628), so the next check asks Z3 again.
 fn forget_modules(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir.join(".checkers/modules"));
 }
@@ -103,7 +103,7 @@ fn no_cache_flag() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The number of modules remembered (D143), out of the program's modules.
+/// The number of modules remembered (#628), out of the program's modules.
 fn modules(out: &str) -> Option<(usize, usize)> {
     let line = out.lines().find(|l| l.contains("modules verified before"))?;
     let nums: Vec<usize> = line.split_whitespace().filter_map(|w| w.parse().ok()).collect();
@@ -173,7 +173,7 @@ fn remembered_module_keeps_its_warnings() {
     let (_, first) = ckc_status(&dir, &["check", "never.ck"]);
     assert!(first.contains("W022"), "a branch that never runs:\n{first}");
     let (_, second) = ckc_status(&dir, &["check", "never.ck"]);
-    assert!(second.contains("W022"), "still reported when the module is remembered (D143):\n{second}");
+    assert!(second.contains("W022"), "still reported when the module is remembered (#628):\n{second}");
     let third = ckc(&dir, &["check", "never.ck"]);
     assert!(modules(&third).is_some_and(|(k, n)| k == n), "{third}");
     let _ = std::fs::remove_dir_all(&dir);

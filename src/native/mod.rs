@@ -1,4 +1,4 @@
-//! Native code (M8, D80, SPEC §14): erasure (`ir`), closure conversion
+//! Native code (M8, #555, SPEC §14): erasure (`ir`), closure conversion
 //! (`lower`), reference counting (`rc`), Cranelift (`codegen`), run in
 //! memory (`run`; compile-time evaluation, `eval`) or written as an
 //! executable (`build`). The runtime is the `checkers_rt` crate.
@@ -126,7 +126,7 @@ fn field_template(g: &Globals, c: crate::core::ConId, k: usize, fns: &[(crate::c
     }
     let ci = &g.cons[c.0 as usize];
     let np = g.arity_ty(ci.ty);
-    let env = std::rc::Rc::new((0..np + k).map(crate::core::Val::var).collect::<Vec<_>>());
+    let env = (0..np + k).map(crate::core::Val::var).collect::<crate::core::Env>();
     let v = crate::core::eval(g, &env, &ci.fields[k].3);
     fn go(d: &Desc, np: usize) -> Template {
         match d {
@@ -517,6 +517,21 @@ mod tests {
         })
     }
 
+    /// How many parameters a copy takes, as `spec` makes it.
+    fn copy_params(c: &spec::Copy) -> usize {
+        match &c.body {
+            spec::Body::Term(t) => {
+                let (mut n, mut b) = (0, t);
+                while let crate::core::Tm::Lam(_, _, _, x) = b {
+                    n += 1;
+                    b = x;
+                }
+                n
+            }
+            spec::Body::Folded { code, .. } => lower::lams(code).0,
+        }
+    }
+
     /// A copy made for a known dictionary takes neither the dictionary nor
     /// the type (tests/run/copy_params.ck): `lo`'s copies take `x` and `y`.
     /// A copy that would take nothing keeps one parameter. The copies are
@@ -530,21 +545,14 @@ mod tests {
                     .copies
                     .iter()
                     .filter(|c| p.names[c.of.0 as usize] == name)
-                    .map(|c| {
-                        let (mut n, mut b) = (0, &c.body);
-                        while let crate::core::Tm::Lam(_, _, _, x) = b {
-                            n += 1;
-                            b = x;
-                        }
-                        n
-                    })
+                    .map(copy_params)
                     .collect();
                 out.dedup();
                 out
             };
-            // `lo`'s copies for a dictionary take its two values; the copy for
-            // `lo 5 3` in `pick`'s copy (both known, §8.9) keeps one.
-            assert_eq!(arity("lo"), [2, 1]);
+            // `lo`'s copies for a dictionary take its two values (`lo 5 3`
+            // in `pick`'s copy, both known, is computed, §8.9).
+            assert_eq!(arity("lo"), [2]);
             assert_eq!(arity("nothing"), [1]);
         })
     }
@@ -561,16 +569,63 @@ mod tests {
                 .copies
                 .iter()
                 .filter(|c| p.names[c.of.0 as usize] == "take")
-                .map(|c| {
-                    let (mut n, mut b) = (0, &c.body);
-                    while let crate::core::Tm::Lam(_, _, _, x) = b {
-                        n += 1;
-                        b = x;
-                    }
-                    n
-                })
+                .map(copy_params)
                 .collect();
             assert!(arities.contains(&1), "take's copies take {arities:?} parameters");
+        })
+    }
+
+    /// A call is specialized on an argument known only once other code is
+    /// folded, as on a literal (§8.9, tests/run/late_specialized.ck): both
+    /// of `main`'s calls of `scale` call a copy taking only `x`.
+    #[test]
+    fn late_known_arguments_are_specialized_on() {
+        fn calls(e: &lower::E, out: &mut Vec<u32>) {
+            use lower::E;
+            match e {
+                E::Call { f, args, .. } => {
+                    out.push(*f);
+                    args.iter().for_each(|a| calls(a, out));
+                }
+                E::Dup(_, b) | E::Drop(_, b) | E::DropReuse(_, _, _, b) | E::At(_, b) => calls(b, out),
+                E::Borrow { args, .. } | E::Tuple(args) | E::Par(args) | E::Multi(args) => args.iter().for_each(|a| calls(a, out)),
+                E::Let(_, a, b) | E::LetMulti(_, a, b) => {
+                    calls(a, out);
+                    calls(b, out);
+                }
+                E::Apply { f, args, .. } => {
+                    calls(f, out);
+                    args.iter().for_each(|a| calls(a, out));
+                }
+                E::Con { fields, .. } => fields.iter().for_each(|a| calls(a, out)),
+                E::Case { arms, lits, default, .. } => {
+                    arms.iter().for_each(|a| calls(&a.body, out));
+                    lits.iter().for_each(|(_, b)| calls(b, out));
+                    default.iter().for_each(|d| calls(d, out));
+                }
+                _ => {}
+            }
+        }
+        funcs_of("late_specialized.ck", |p| {
+            let main = p.funcs.iter().find(|f| f.name == "main").expect("main");
+            let mut out = Vec::new();
+            calls(&main.body, &mut out);
+            let scale: Vec<usize> = out.iter().map(|f| &p.funcs[*f as usize]).filter(|f| f.name == "scale").map(|f| f.params.len()).collect();
+            assert_eq!(scale, [1, 1], "{}", dump(&main.body, 0));
+            let copies: std::collections::HashSet<u32> = out.iter().copied().filter(|f| p.funcs[*f as usize].name == "scale").collect();
+            assert_eq!(copies.len(), 1, "one copy serves both calls");
+        })
+    }
+
+    /// Recursion on a known value makes one copy, not one per step
+    /// (tests/run/known_recursion.ck): `down 3 x`'s copy calls the general
+    /// `down` with `2`.
+    #[test]
+    fn recursion_on_a_known_value_makes_one_copy() {
+        funcs_of("known_recursion.ck", |p| {
+            let specs = p.specs.borrow();
+            let down: Vec<usize> = specs.copies.iter().filter(|c| p.names[c.of.0 as usize] == "down").map(copy_params).collect();
+            assert_eq!(down, [1]);
         })
     }
 
@@ -699,6 +754,24 @@ mod tests {
         })
     }
 
+    /// An operation computed when compiling whose value is a function is
+    /// static data (§8.9, tests/run/folded_function.ck): `pick`'s arms are
+    /// lambdas' closures laid out in the program, so its code is that of
+    /// `by_hand`, which returns constants; `pick_partial`'s, a function
+    /// given an argument, are laid out the same way, so its code is that of
+    /// `by_hand_partial`. The code names the data it loads: equal values
+    /// are the same object.
+    #[test]
+    fn functions_computed_when_compiling_are_static() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("folded_function", triple);
+                assert_eq!(code_of(&code, "pick"), code_of(&code, "by_hand"), "{triple}");
+                assert_eq!(code_of(&code, "pick_partial"), code_of(&code, "by_hand_partial"), "{triple}");
+            }
+        })
+    }
+
     /// Code put into a function from another (`at`: a small function
     /// inlined) compiles as the same code written there: a comparison's
     /// `Bool` is branched on, not built and dropped, and a remainder by a
@@ -728,6 +801,26 @@ mod tests {
                     assert!(!c.contains("ext_name"), "{triple}: `{f}` calls the runtime:\n{c}");
                 }
                 assert!(code_of(&code, "product").contains("ext_name"), "{triple}: `product` without its overflow path");
+            }
+        })
+    }
+
+    /// A loop over bytes (tests/run/loop_code.ck, `walk`) calls the runtime
+    /// only where a value isn't what its code expects: an argument that
+    /// isn't an array (`ck_len`) and an index that isn't a small integer
+    /// (`ckw_cmp`). Reading the elements, `i + 1` and the `Bool` of the
+    /// `and` need none. The same loop at a type parameter, called at
+    /// `Bytes` (`same`), is a copy for `U8`: the same code.
+    #[test]
+    fn loops_over_bytes_need_no_runtime() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("loop_code", triple);
+                let walk = code_of(&code, "walk");
+                let called: std::collections::BTreeSet<&str> =
+                    walk.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| w.starts_with("ck_") || w.starts_with("ckw_")).collect();
+                assert!(called.iter().all(|f| ["ck_len", "ckw_cmp"].contains(f)), "{triple}: `walk` calls {called:?}:\n{walk}");
+                assert_eq!(code_of(&code, "same"), walk, "{triple}");
             }
         })
     }
@@ -777,7 +870,7 @@ mod tests {
     #[test]
     fn known_constants_have_no_first_use_code() {
         crate::with_big_stack(|| {
-            for name in ["known_baked", "known_arrays", "known_closures"] {
+            for name in ["known_baked", "known_arrays", "known_closures", "known_closure"] {
                 let path = format!("{}/tests/run/{name}.ck", env!("CARGO_MANIFEST_DIR"));
                 let text = std::fs::read_to_string(&path).unwrap();
                 let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();

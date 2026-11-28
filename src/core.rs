@@ -106,12 +106,12 @@ pub enum Prim {
     Concat,
     Len,
     Index,
-    /// `par t` — identity to the type checker and prover (D34).
+    /// `par t` — identity to the type checker and prover (#522).
     Par,
     When,
     /// A stdlib function implemented in Rust (`__builtin`), by qualified name.
     Builtin(Rc<str>),
-    /// `forall x y : …, p` (D137): its one argument is a Π over the
+    /// `forall x y : …, p` (#632): its one argument is a Π over the
     /// variables whose body is the `Bool` (premises implying the
     /// conclusion). Only in specifications; never evaluated or compiled.
     Forall,
@@ -139,7 +139,7 @@ pub enum Tm {
     Tuple(Vec<Tm>),
     /// Component `i` of a tuple. With `rest` (the last component a pattern
     /// names), the components from `i` on: `(a, b, c)` is `(a, (b, c))`, so
-    /// `(x, r)` binds `r` to `(b, c)` (D174).
+    /// `(x, r)` binds `r` to `(b, c)` (#673).
     Proj(Rc<Tm>, usize, bool),
     /// Record projection: field `index` (counting fields only, not type parameters).
     Field(Rc<Tm>, ConId, usize),
@@ -256,7 +256,10 @@ impl Tm {
     }
 }
 
-pub type Env = Rc<Vec<Val>>;
+/// The values of the locals a term is evaluated under, outermost first:
+/// persistent, so a closure keeps it and a value added makes a new one
+/// without a copy.
+pub type Env = crate::pvec::PVec<Val>;
 
 #[derive(Clone, Debug)]
 pub struct Closure {
@@ -317,9 +320,17 @@ pub struct DefInfo {
     pub body: Option<Tm>,
     /// Do not unfold during evaluation (`partial`).
     pub opaque: bool,
-    /// Sealed by its module (D54): does not unfold outside it.
+    /// Sealed by its module (#537): does not unfold outside it.
     pub sealed: bool,
-    /// Binder positions (over the whole Π-type) that are `comptime` (D59).
+    /// Unfolds without spending fuel, so a type it computes is computed to
+    /// completion (§8.9): it can't recurse (an alias, whose cycles are
+    /// errors, #557; a constant; one the compiler makes), or it is a
+    /// function returning a type that is proved, its termination too
+    /// (`Elab::settle_type_fn`). Any other function may recurse without end
+    /// (#711), so it takes fuel, as the type checker's evaluation of a
+    /// function not proved does.
+    pub free: bool,
+    /// Binder positions (over the whole Π-type) that are `comptime` (#541).
     /// A function with any is a compile-time function: staging inlines it.
     pub comptime: Vec<usize>,
 }
@@ -334,10 +345,10 @@ pub struct TyInfo {
     /// Abstract to importers (or a built-in type such as `Nat`).
     pub is_abstract: bool,
     /// Per parameter: occurs only strictly positively in constructor fields
-    /// (for an abstract type: marked `+`, D16).
+    /// (for an abstract type: marked `+`, #511).
     pub positive: Vec<bool>,
     /// Per parameter of an abstract type: marked `-`, so it occurs only
-    /// negatively (D16).
+    /// negatively (#511).
     pub negative: Vec<bool>,
     /// How many of `params`, the last ones, are the dictionaries of its
     /// header's class clauses (#385): implicit arguments, found where the
@@ -364,7 +375,7 @@ pub struct Globals {
     pub tys: Vec<TyInfo>,
     pub cons: Vec<ConInfo>,
     pub metas: RefCell<Vec<MetaEntry>>,
-    /// The implicit parameters unknowns stand for, for messages (D141).
+    /// The implicit parameters unknowns stand for, for messages (#627).
     pub meta_origins: RefCell<HashMap<MetaId, MetaOrigin>>,
     /// Remaining δ-unfoldings before evaluation stops unfolding (guards against
     /// non-terminating definitions whose termination isn't checked yet).
@@ -374,6 +385,10 @@ pub struct Globals {
     /// another type (#133): neither failed nor guessed, they wait for the
     /// dictionary (level, the two types).
     pub postponed: RefCell<Vec<(usize, Val, Val)>>,
+    /// Unknowns compared with an error: what they are isn't known because
+    /// of an error already reported, so what follows from them isn't
+    /// reported either.
+    pub errored: RefCell<std::collections::HashSet<MetaId>>,
     /// Each type's value parameters that its fields' types are computed
     /// from (#170), once worked out (`value_params_needed`).
     pub value_params: RefCell<HashMap<TyId, std::collections::BTreeSet<usize>>>,
@@ -392,6 +407,12 @@ pub struct Globals {
     /// known. Neither the type checker, staging nor folding computes a call
     /// of one.
     pub run_time_only: RefCell<std::collections::HashSet<DefId>>,
+    /// The definitions private to another package than the program's (§6
+    /// rule 9), which no runtime error names: native code reports one in
+    /// such a function's code as in the function the program can refer to
+    /// that led to it (`native::spec::report`). Set once the program is
+    /// checked (`Elab::hide_private`); empty before.
+    pub hidden: RefCell<std::collections::HashSet<DefId>>,
     /// Every obligation of the program is proved, and none of its facts is
     /// assumed by an `admit` (§13.3): native code compiled from here relies
     /// on the proofs, with no run-time checks of guarded operations. False
@@ -404,6 +425,17 @@ pub struct Globals {
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
+    /// The longest identity environment `id_env` gave.
+    ids: RefCell<Env>,
+    /// Known values kept across builds (§8.9): their keys and storage.
+    pub known_disk: RefCell<crate::known_cache::KnownCache>,
+    /// Whether `force` keeps what it computes across builds (§8.9): the
+    /// cache is on, and no kept computation is running (one kept value's
+    /// parts aren't kept on their own).
+    pub keeping: Cell<bool>,
+    /// How many more definitions evaluation may unfold before it stops:
+    /// `force_kept`'s first attempt counts its unfoldings with it.
+    pub unfolds_left: Cell<u64>,
 }
 
 #[derive(Default, Clone)]
@@ -411,15 +443,15 @@ pub struct WellKnown {
     pub bool_ty: Option<TyId>,
     pub true_con: Option<ConId>,
     pub false_con: Option<ConId>,
-    /// The prelude's `Nat`, a refinement alias of `Int` (D121).
+    /// The prelude's `Nat`, a refinement alias of `Int` (#609).
     pub nat: Option<DefId>,
     pub int: Option<TyId>,
     pub string: Option<TyId>,
-    /// `Bytes`, the prelude's alias of `Array U8` (D133).
+    /// `Bytes`, the prelude's alias of `Array U8` (#624).
     pub bytes: Option<DefId>,
     pub array: Option<TyId>,
     /// The prelude's fixed-width aliases and `Char`, with the layout of an
-    /// array of them (`checkers_rt::array::Layout`, D133).
+    /// array of them (`checkers_rt::array::Layout`, #624).
     pub layouts: Vec<(DefId, u8)>,
     pub list: Option<TyId>,
     pub nil: Option<ConId>,
@@ -443,7 +475,7 @@ pub struct WellKnown {
     /// passed their type's descriptor, not only its layout (#170).
     pub desc_params: HashMap<DefId, std::collections::BTreeSet<usize>>,
     /// Classes' functions, each reading a field of its dictionary, and the
-    /// functions building instances' dictionaries (D136): a class's
+    /// functions building instances' dictionaries (#615): a class's
     /// function at a known instance's dictionary is compiled as a direct
     /// call of that instance's function (§14).
     pub class_fns: std::collections::HashSet<DefId>,
@@ -453,6 +485,19 @@ pub struct WellKnown {
 pub const DEFAULT_FUEL: u64 = 200_000;
 
 impl Globals {
+    /// The environment of `l` locals in which each is its own variable,
+    /// for evaluating a term under them: a prefix of the longest one asked
+    /// for so far, which is kept, so each costs about what the length
+    /// asked grew by, not `l`.
+    pub fn id_env(&self, l: usize) -> Env {
+        let mut ids = self.ids.borrow_mut();
+        while ids.len() < l {
+            let n = ids.len();
+            ids.push(Val::var(n));
+        }
+        ids.prefix(l)
+    }
+
     pub fn new() -> Globals {
         Globals {
             defs: Vec::new(),
@@ -463,13 +508,19 @@ impl Globals {
             fuel: Cell::new(DEFAULT_FUEL),
             well_known: WellKnown::default(),
             postponed: RefCell::new(Vec::new()),
+            errored: RefCell::new(std::collections::HashSet::new()),
             value_params: RefCell::new(HashMap::new()),
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
             run_time_only: RefCell::new(std::collections::HashSet::new()),
+            hidden: RefCell::new(std::collections::HashSet::new()),
+            ids: RefCell::new(Env::new()),
             proved: false,
             fold_work: std::cell::Cell::new(None),
             type_bases: HashMap::new(),
+            known_disk: RefCell::new(Default::default()),
+            keeping: Cell::new(crate::verify::cache_dir().is_some()),
+            unfolds_left: Cell::new(u64::MAX),
         }
     }
 
@@ -572,9 +623,9 @@ impl Default for Globals {
 // ── evaluation ───────────────────────────────────────────────────────────────
 
 pub fn push(env: &Env, v: Val) -> Env {
-    let mut e = (**env).clone();
+    let mut e = env.clone();
     e.push(v);
-    Rc::new(e)
+    e
 }
 
 pub fn apply_closure(g: &Globals, c: &Closure, v: Val) -> Val {
@@ -609,7 +660,7 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
                 Val::TyCon(*t, Rc::new([]))
             } else {
                 let tid = *t;
-                eval(g, &Rc::new(Vec::new()), &eta(n, &[], |args| Tm::TyConApp(tid, args)))
+                eval(g, &crate::core::Env::new(), &eta(n, &[], |args| Tm::TyConApp(tid, args)))
             }
         }
         Tm::Con(c) => {
@@ -619,7 +670,7 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
             } else {
                 let cid = *c;
                 let icits = con_icits(g, cid);
-                eval(g, &Rc::new(Vec::new()), &eta(n, &icits, |args| Tm::ConApp(cid, args)))
+                eval(g, &crate::core::Env::new(), &eta(n, &icits, |args| Tm::ConApp(cid, args)))
             }
         }
         Tm::Meta(m) => match g.meta(*m) {
@@ -729,16 +780,21 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
     if info.opaque || info.sealed {
         return None;
     }
-    // Fuel bounds unfolding of functions. A type alias can't recurse
-    // (cycles are errors, D65), so unfolding it always terminates and costs
-    // none: running out of fuel must not stop `U8` from being `Nat`.
-    if !is_type_former(&info.ty) {
+    // Fuel bounds unfolding of functions. A definition that can't recurse,
+    // or a type function proved to end, costs none: running out of fuel
+    // must not stop `U8` from being `Nat`, nor a type from computing. A type
+    // function not proved may never end (#711): it takes fuel.
+    if !info.free {
         if g.fuel.get() == 0 {
             return None;
         }
         g.fuel.set(g.fuel.get() - 1);
     }
-    let mut r = eval(g, &Rc::new(Vec::new()), body);
+    match g.unfolds_left.get() {
+        0 => return None,
+        n => g.unfolds_left.set(n - 1),
+    }
+    let mut r = eval(g, &crate::core::Env::new(), body);
     for e in sp.iter() {
         r = elim(g, r, e.clone());
     }
@@ -769,14 +825,14 @@ fn builtin_value(g: &Globals, info: &DefInfo, sp: &[Elim]) -> Option<Val> {
     }
 }
 
-/// Weak-head normal form: resolve metas and unfold definitions at the head.
 /// Is `v` the type `Nat`, or a refinement of it (`U8`, `Char`)? Aliases are
-/// unfolded one at a time until `Nat` is met (D121): forcing would go past it
+/// unfolded one at a time until `Nat` is met (#609): forcing would go past it
 /// to `Int`.
 pub fn is_nat(g: &Globals, v: &Val) -> bool {
     let Some(nat) = g.well_known.nat else { return false };
     let mut v = force_meta(g, v.clone());
-    for _ in 0..64 {
+    // However many aliases: unfolding them ends (see `unfold`).
+    loop {
         if let Val::Neutral(Head::Def(d), _) = &v {
             if *d == nat {
                 return true;
@@ -787,16 +843,16 @@ pub fn is_nat(g: &Globals, v: &Val) -> bool {
             None => return false,
         }
     }
-    false
 }
 
-/// The layout of an array of `v`, a type (D133): a fixed-width alias's or
+/// The layout of an array of `v`, a type (#624): a fixed-width alias's or
 /// `Bool`'s (`Ok(code)`, `checkers_rt::array::Layout`), a type variable at
 /// level `Err(level)` (its layout is the variable's word at run time), or
 /// one word per element (`Ok(0)`).
 pub fn layout_of(g: &Globals, v: &Val) -> Result<u8, usize> {
     let mut v = force_meta(g, v.clone());
-    for _ in 0..64 {
+    // However many aliases: unfolding them ends (see `unfold`).
+    loop {
         if let Val::Neutral(Head::Def(d), _) = &v {
             if let Some((_, l)) = g.well_known.layouts.iter().find(|(a, _)| a == d) {
                 return Ok(*l);
@@ -842,17 +898,15 @@ impl Desc {
 /// The descriptor of `v`, a type (#170). Its layout is `layout_of`'s; a
 /// type variable is its word at run time.
 pub fn desc_of(g: &Globals, v: &Val) -> Desc {
-    desc_at(g, v, 0)
+    desc_at(g, v)
 }
 
-fn desc_at(g: &Globals, v: &Val, depth: usize) -> Desc {
+/// However deep the type: its descriptor is as deep.
+fn desc_at(g: &Globals, v: &Val) -> Desc {
     let layout = match layout_of(g, v) {
         Ok(l) => l,
         Err(level) => return Desc::Var(level),
     };
-    if depth > 32 {
-        return Desc::unknown(layout);
-    }
     match force(g, v.clone()) {
         Val::TyCon(id, args) => {
             let needed = value_params_needed(g, id);
@@ -861,7 +915,7 @@ fn desc_at(g: &Globals, v: &Val, depth: usize) -> Desc {
                 .iter()
                 .enumerate()
                 .map(|(k, a)| match ti.params.get(k) {
-                    Some((_, t)) if is_type_former(t) => desc_at(g, a, depth + 1),
+                    Some((_, t)) if is_type_former(t) => desc_at(g, a),
                     // A value parameter that a field's type is computed from.
                     _ if needed.contains(&k) => Desc::Value(a.clone()),
                     // Any other value parameter (`Vec a n`'s `n`) says
@@ -873,7 +927,7 @@ fn desc_at(g: &Globals, v: &Val, depth: usize) -> Desc {
         }
         Val::TupleTy(ts) => {
             let parts = flat_parts(g, &ts, true);
-            Desc::Known(checkers_rt::desc::tag(Some(checkers_rt::desc::TUPLE), 0), parts.iter().map(|t| desc_at(g, t, depth + 1)).collect())
+            Desc::Known(checkers_rt::desc::tag(Some(checkers_rt::desc::TUPLE), 0), parts.iter().map(|t| desc_at(g, t)).collect())
         }
         Val::Neutral(Head::Var(x), sp) => match sp.as_slice() {
             [Elim::Field(c, i)] if g.is_dict_type_field(*c, *i) => Desc::Dict(x, *c, *i),
@@ -881,7 +935,7 @@ fn desc_at(g: &Globals, v: &Val, depth: usize) -> Desc {
                 x,
                 sp.iter()
                     .map(|e| match e {
-                        Elim::App(a, _) => desc_at(g, a, depth + 1),
+                        Elim::App(a, _) => desc_at(g, a),
                         _ => Desc::unknown(0),
                     })
                     .collect(),
@@ -894,7 +948,7 @@ fn desc_at(g: &Globals, v: &Val, depth: usize) -> Desc {
             const PROBE: usize = usize::MAX / 2;
             match force(g, apply_closure(g, &c, Val::var(PROBE))) {
                 Val::TyCon(id, args) if matches!(args.last(), Some(Val::Neutral(Head::Var(PROBE), sp)) if sp.is_empty()) => {
-                    match desc_at(g, &Val::TyCon(id, args[..args.len() - 1].into()), depth + 1) {
+                    match desc_at(g, &Val::TyCon(id, args[..args.len() - 1].into())) {
                         Desc::Known(tag, ds) => Desc::Known(tag, ds),
                         d => d,
                     }
@@ -926,11 +980,11 @@ pub fn value_params_needed(g: &Globals, id: TyId) -> std::collections::BTreeSet<
                 continue;
             }
             let n = np + k;
-            let env = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+            let env = (0..n).map(Val::var).collect::<crate::core::Env>();
             let v = force(g, eval(g, &env, &ci.fields[k].3));
             let mut levels = std::collections::BTreeSet::new();
             if fixed_type(&v) {
-                value_args(g, &v, n, 0, &mut levels);
+                value_args(g, &v, n, &mut levels);
             } else {
                 let mut free = std::collections::BTreeSet::new();
                 free_vars(&quote(g, n, &v), 0, &mut free);
@@ -945,26 +999,27 @@ pub fn value_params_needed(g: &Globals, id: TyId) -> std::collections::BTreeSet<
 
 /// The levels (at `n`) that the value arguments in type `v` mention, at
 /// the value parameters of the types it applies that their fields need.
-fn value_args(g: &Globals, v: &Val, n: usize, depth: usize, out: &mut std::collections::BTreeSet<usize>) {
-    if depth > 32 {
-        return;
-    }
-    match force(g, v.clone()) {
-        Val::TyCon(id, args) => {
-            let needed = value_params_needed(g, id);
-            let params = &g.tys[id.0 as usize].params;
-            for (k, a) in args.iter().enumerate() {
-                if params.get(k).is_some_and(|p| is_type_former(&p.1)) {
-                    value_args(g, a, n, depth + 1, out);
-                } else if needed.contains(&k) {
-                    let mut free = std::collections::BTreeSet::new();
-                    free_vars(&quote(g, n, a), 0, &mut free);
-                    out.extend(free.into_iter().map(|i| n - 1 - i));
+fn value_args(g: &Globals, v: &Val, n: usize, out: &mut std::collections::BTreeSet<usize>) {
+    // However deep the type: a worklist.
+    let mut work = vec![v.clone()];
+    while let Some(v) = work.pop() {
+        match force(g, v) {
+            Val::TyCon(id, args) => {
+                let needed = value_params_needed(g, id);
+                let params = &g.tys[id.0 as usize].params;
+                for (k, a) in args.iter().enumerate() {
+                    if params.get(k).is_some_and(|p| is_type_former(&p.1)) {
+                        work.push(a.clone());
+                    } else if needed.contains(&k) {
+                        let mut free = std::collections::BTreeSet::new();
+                        free_vars(&quote(g, n, a), 0, &mut free);
+                        out.extend(free.into_iter().map(|i| n - 1 - i));
+                    }
                 }
             }
+            Val::TupleTy(ts) => work.extend(ts.iter().cloned()),
+            _ => {}
         }
-        Val::TupleTy(ts) => ts.iter().for_each(|t| value_args(g, t, n, depth + 1, out)),
-        _ => {}
     }
 }
 
@@ -1006,7 +1061,7 @@ pub fn field_type(g: &Globals, c: ConId, k: usize) -> FieldType {
     let ci = &g.cons[c.0 as usize];
     let np = g.arity_ty(ci.ty);
     let n = np + k;
-    let env = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+    let env = (0..n).map(Val::var).collect::<crate::core::Env>();
     let v = force(g, eval(g, &env, &ci.fields[k].3));
     let t = quote(g, n, &v);
     if fixed_type(&v) {
@@ -1046,8 +1101,21 @@ pub fn known_const(g: &Globals, d: DefId) -> Option<Tm> {
     g.known.borrow().get(&d).cloned()
 }
 
+/// Weak-head normal form: resolve metas and unfold definitions at the
+/// head. A closed call that takes `KEEP_STEPS` unfoldings or more is
+/// kept across builds (§8.9, `known_cache::force_kept`).
 pub fn force(g: &Globals, v: Val) -> Val {
-    let mut v = force_meta(g, v);
+    let v = force_meta(g, v);
+    if matches!(v, Val::Neutral(Head::Def(_), _)) && g.keeping.get() {
+        return crate::known_cache::force_kept(g, v);
+    }
+    unfold_all(g, v)
+}
+
+/// `force` of `v`, whose metas at the head are resolved: computed here,
+/// not kept.
+#[inline]
+pub fn unfold_all(g: &Globals, mut v: Val) -> Val {
     while let Some(u) = unfold(g, &v) {
         v = force_meta(g, u);
     }
@@ -1063,8 +1131,9 @@ pub fn class_type_at(g: &Globals, v: &Val) -> Option<Val> {
     if !is_class_type(&v) {
         return None;
     }
-    // Unfold the class's type, then its dictionary, until the field is read.
-    for _ in 0..32 {
+    // Unfold the class's type, then its dictionary, until the field is read
+    // (a dictionary is a function's value: unfolding it takes fuel).
+    loop {
         let reading = is_class_type(&v) || matches!(&v, Val::Neutral(Head::Def(_), sp) if sp.iter().any(|e| matches!(e, Elim::Field(..))));
         if !reading {
             // Stuck on a dictionary that is a variable: not known.
@@ -1073,7 +1142,6 @@ pub fn class_type_at(g: &Globals, v: &Val) -> Option<Val> {
         }
         v = force_meta(g, unfold(g, &v)?);
     }
-    None
 }
 
 /// A neutral value with one more eliminator: the spine is copied only if
@@ -1110,12 +1178,21 @@ fn stuck_base(g: &Globals, orig: Val, forced: Val) -> Val {
 }
 
 /// A tuple's components, flattened: a last component that is itself a tuple
-/// (of two or more) is its components (D174). `ty`: of a tuple type.
+/// (of two or more) is its components (#673). `ty`: of a tuple type.
 pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
+    flat_parts_by(vs, |v| match (ty, force(g, v.clone())) {
+        (true, Val::TupleTy(ws)) | (false, Val::Tuple(ws)) => Some(ws),
+        _ => None,
+    })
+}
+
+/// `flat_parts`, with `parts` saying which last component is a tuple, and
+/// its components.
+pub fn flat_parts_by(vs: &[Val], parts: impl Fn(&Val) -> Option<Rc<[Val]>>) -> Vec<Val> {
     let mut vs = vs.to_vec();
     while vs.len() >= 2 {
-        match (ty, force(g, vs[vs.len() - 1].clone())) {
-            (true, Val::TupleTy(ws)) | (false, Val::Tuple(ws)) if ws.len() >= 2 => {
+        match parts(&vs[vs.len() - 1]) {
+            Some(ws) if ws.len() >= 2 => {
                 vs.pop();
                 vs.extend(ws.iter().cloned());
             }
@@ -1123,6 +1200,25 @@ pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
         }
     }
     vs
+}
+
+/// Two flattened tuples' (or tuple types') components, paired: of
+/// different lengths, the shorter's last component is the rest of the
+/// longer, `(a, t)` and `(A, B, C)` giving `a`, `A` and `t`, `(B, C)`.
+/// `None` if no pairing makes them alike: the shorter has fewer than two.
+pub fn pair_parts(x: Vec<Val>, y: Vec<Val>, ty: bool) -> Option<(Vec<Val>, Vec<Val>)> {
+    if x.len() == y.len() {
+        return Some((x, y));
+    }
+    let (short, long, flip) = if x.len() < y.len() { (x, y, false) } else { (y, x, true) };
+    if short.len() < 2 {
+        return None;
+    }
+    let k = short.len() - 1;
+    let rest = if ty { Val::TupleTy(long[k..].into()) } else { Val::Tuple(long[k..].into()) };
+    let mut long2 = long[..k].to_vec();
+    long2.push(rest);
+    Some(if flip { (long2, short) } else { (short, long2) })
 }
 
 // A projection or a field read doesn't unfold what it reads: a call's
@@ -1173,9 +1269,9 @@ fn case(g: &Globals, v: Val, c: Rc<CaseTm>, env: Env) -> Val {
             for (cid, n, body) in &c.branches {
                 if *cid == id {
                     let fields = &args[args.len() - n..];
-                    let mut e = (*env).clone();
+                    let mut e = env.clone();
                     e.extend(fields.iter().cloned());
-                    return eval(g, &Rc::new(e), body);
+                    return eval(g, &e, body);
                 }
             }
             match &c.default {
@@ -1192,9 +1288,9 @@ fn case(g: &Globals, v: Val, c: Rc<CaseTm>, env: Env) -> Val {
             // A string literal matched as `String b`: its bytes (#170).
             if let Lit::Str(s) = &l {
                 if let Some((_, n, body)) = c.branches.iter().find(|(cid, _, _)| Some(g.cons[cid.0 as usize].ty) == g.well_known.string) {
-                    let mut e = (*env).clone();
+                    let mut e = env.clone();
                     e.extend(std::iter::repeat_n(Val::Lit(Lit::Bytes(Rc::from(s.as_bytes()))), *n));
-                    return eval(g, &Rc::new(e), body);
+                    return eval(g, &e, body);
                 }
             }
             match &c.default {
@@ -1383,11 +1479,11 @@ pub fn quote(g: &Globals, l: usize, v: &Val) -> Tm {
 
 fn quote_case(g: &Globals, l: usize, c: &Rc<CaseTm>, env: &Env) -> Rc<CaseTm> {
     let qb = |n: usize, body: &Tm| {
-        let mut e = (**env).clone();
+        let mut e = env.clone();
         for k in 0..n {
             e.push(Val::var(l + k));
         }
-        quote(g, l + n, &eval(g, &Rc::new(e), body))
+        quote(g, l + n, &eval(g, &e, body))
     };
     Rc::new(CaseTm {
         branches: c.branches.iter().map(|(cid, n, b)| (*cid, *n, qb(*n, b))).collect(),
@@ -1403,11 +1499,11 @@ fn quote_case(g: &Globals, l: usize, c: &Rc<CaseTm>, env: &Env) -> Rc<CaseTm> {
 pub enum UnifyError {
     Mismatch,
     /// `?f x` against a type that isn't a type constructor applied to a
-    /// type (`Int`), D141.
+    /// type (`Int`), #627.
     NotApplied(MetaId),
 }
 
-/// What an unknown stands for (D141): the implicit parameter `name` of
+/// What an unknown stands for (#627): the implicit parameter `name` of
 /// `owner`, a meta applied to `spine` locals first.
 #[derive(Debug, Clone)]
 pub struct MetaOrigin {
@@ -1556,7 +1652,7 @@ fn prune(g: &Globals, m2: MetaId, sp: &[Elim], p: &PartialRenaming) -> Option<(M
     for (k, (_, i, _)) in keep.iter().enumerate().rev() {
         t = Tm::Lam(Rc::from(format!("x{k}")), Mult::Many, *i, Rc::new(t));
     }
-    let sol = eval(g, &Rc::new(Vec::new()), &t);
+    let sol = eval(g, &crate::core::Env::new(), &t);
     g.metas.borrow_mut()[m2.0 as usize] = MetaEntry::Solved(sol);
     Some((m3, keep.into_iter().filter(|k| k.0).map(|k| Elim::App(k.2, k.1)).collect()))
 }
@@ -1582,11 +1678,11 @@ pub fn strengthen(g: &Globals, v: &Val, outer: usize) -> Val {
 /// variable at level `x` solved by one that isn't, when its spine is all
 /// variables: what `t` says can then no longer depend on `x` through an
 /// unknown that nothing determined (an implicit argument a function type's
-/// predicate left open must not make it look like a postcondition, D82).
+/// predicate left open must not make it look like a postcondition, #576).
 pub fn forget_var(g: &Globals, l: usize, t: &Tm, x: usize) {
     if let Tm::Meta(m) = t.head() {
         if g.meta(*m).is_none() {
-            let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());
+            let env = (0..l).map(Val::var).collect::<crate::core::Env>();
             if let Val::Neutral(Head::Meta(m), sp) = force_meta(g, eval(g, &env, t)) {
                 let ren: HashMap<usize, usize> = (0..l).filter(|y| *y != x).map(|y| (y, y)).collect();
                 prune(g, m, &sp, &PartialRenaming { dom: l, cod: l, ren });
@@ -1598,13 +1694,13 @@ pub fn forget_var(g: &Globals, l: usize, t: &Tm, x: usize) {
 
 fn rename_case(g: &Globals, m: MetaId, p: &PartialRenaming, c: &Rc<CaseTm>, env: &Env) -> Result<Rc<CaseTm>, UnifyError> {
     let rb = |n: usize, body: &Tm| -> Result<Tm, UnifyError> {
-        let mut e = (**env).clone();
+        let mut e = env.clone();
         let mut pr = PartialRenaming { dom: p.dom, cod: p.cod, ren: p.ren.clone() };
         for _ in 0..n {
             e.push(Val::var(pr.cod));
             pr = lift(&pr);
         }
-        rename(g, m, &pr, &eval(g, &Rc::new(e), body))
+        rename(g, m, &pr, &eval(g, &e, body))
     };
     Ok(Rc::new(CaseTm {
         branches: c.branches.iter().map(|(cid, n, b)| Ok((*cid, *n, rb(*n, b)?))).collect::<Result<_, _>>()?,
@@ -1620,7 +1716,7 @@ fn solve(g: &Globals, gamma: usize, m: MetaId, sp: &[Elim], rhs: &Val) -> Result
     for (k, i) in icits.iter().enumerate().rev() {
         t = Tm::Lam(Rc::from(format!("x{k}")), Mult::Many, *i, Rc::new(t));
     }
-    let sol = eval(g, &Rc::new(Vec::new()), &t);
+    let sol = eval(g, &crate::core::Env::new(), &t);
     g.metas.borrow_mut()[m.0 as usize] = MetaEntry::Solved(sol);
     Ok(())
 }
@@ -1662,23 +1758,12 @@ fn unify_many(g: &Globals, l: usize, a: &[Val], b: &[Val]) -> Result<(), UnifyEr
     Ok(())
 }
 
-/// Two tuples (or tuple types), flattened (D174). Of different lengths, the
+/// Two tuples (or tuple types), flattened (#673). Of different lengths, the
 /// shorter's last component is the rest of the longer: `(a, t)` and
 /// `(A, B, C)` give `a = A`, `t = (B, C)`.
 fn unify_tuple(g: &Globals, l: usize, x: &[Val], y: &[Val], ty: bool) -> Result<(), UnifyError> {
-    let (x, y) = (flat_parts(g, x, ty), flat_parts(g, y, ty));
-    let (short, long, flip) = if x.len() <= y.len() { (&x, &y, false) } else { (&y, &x, true) };
-    if short.len() == long.len() {
-        return unify_many(g, l, &x, &y);
-    }
-    if short.len() < 2 {
-        return Err(UnifyError::Mismatch);
-    }
-    let k = short.len() - 1;
-    let rest = if ty { Val::TupleTy(long[k..].into()) } else { Val::Tuple(long[k..].into()) };
-    let mut long2 = long[..k].to_vec();
-    long2.push(rest);
-    if flip { unify_many(g, l, &long2, short) } else { unify_many(g, l, short, &long2) }
+    let (x, y) = pair_parts(flat_parts(g, x, ty), flat_parts(g, y, ty), ty).ok_or(UnifyError::Mismatch)?;
+    unify_many(g, l, &x, &y)
 }
 
 pub fn unify(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> {
@@ -1742,7 +1827,7 @@ pub fn class_type_base(g: &Globals, v: &Val) -> Option<Val> {
             return None;
         }
         let b = g.type_bases.get(&(c, i))?.first()?;
-        return Some(eval(g, &Rc::new(args), b));
+        return Some(eval(g, &crate::core::Env::from(args), b));
     }
     let Val::Neutral(Head::Var(h), sp) = force(g, v) else { return None };
     let Some(Elim::Field(c, i)) = sp.last() else { return None };
@@ -1756,12 +1841,30 @@ pub fn class_type_base(g: &Globals, v: &Val) -> Option<Val> {
     let n = g.arity_ty(g.cons[c.0 as usize].ty);
     let mut env: Vec<Val> = vec![Val::Error; n];
     env.push(Val::Neutral(Head::Var(h), Rc::new(sp[..sp.len() - 1].to_vec())));
-    Some(eval(g, &Rc::new(env), b))
+    Some(eval(g, &crate::core::Env::from(env), b))
+}
+
+/// The unknowns in a term.
+fn metas_in(t: &Tm, out: &mut std::collections::HashSet<MetaId>) {
+    if let Tm::Meta(m) = t {
+        out.insert(*m);
+    }
+    t.any_sub(|s, _| {
+        metas_in(s, out);
+        false
+    });
 }
 
 fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> {
     match (a, b) {
-        (Val::Error, _) | (_, Val::Error) => Ok(()),
+        (Val::Error, Val::Error) => Ok(()),
+        // An error is any type: the unknowns it is compared with stay
+        // unknown, because of it.
+        (Val::Error, other) | (other, Val::Error) => {
+            let mut out = g.errored.borrow_mut();
+            metas_in(&zonk_metas(g, l, &quote(g, l, other)), &mut out);
+            Ok(())
+        }
         (Val::Lam(_, _, _, c1), Val::Lam(_, _, _, c2)) => {
             unify(g, l + 1, &apply_closure(g, c1, Val::var(l)), &apply_closure(g, c2, Val::var(l)))
         }
@@ -1930,6 +2033,10 @@ pub trait Scope {
     fn at(&self, _level: usize) -> Option<u32> {
         None
     }
+    /// How many locals are named `x`.
+    fn count(&self, x: &str) -> usize {
+        (0..self.len()).filter(|l| &**self.name(*l) == x).count()
+    }
 }
 
 impl Scope for [Name] {
@@ -1975,6 +2082,9 @@ impl<S: Scope + ?Sized> Scope for Under<'_, S> {
     fn at(&self, level: usize) -> Option<u32> {
         if level < self.0.len() { self.0.at(level) } else { None }
     }
+    fn count(&self, x: &str) -> usize {
+        self.0.count(x) + self.1.iter().filter(|n| &***n == x).count()
+    }
 }
 
 /// The names `show_prec` sees: the context's, then the binders it is under.
@@ -1997,7 +2107,7 @@ impl<S: Scope + ?Sized> Ns<'_, S> {
         }
     }
     fn contains(&self, x: &Name) -> bool {
-        self.inner.contains(x) || (0..self.outer.len()).any(|l| self.outer.name(l) == x)
+        self.inner.contains(x) || self.outer.count(x) > 0
     }
     fn push(&mut self, x: Name) {
         self.inner.push(x);
@@ -2068,7 +2178,7 @@ fn local<S: Scope + ?Sized>(ls: &S, level: usize, name: &Name) -> String {
         return name.to_string();
     }
     let same = |l: &usize| ls.name(*l) == name;
-    if level >= ls.len() || (0..ls.len()).filter(same).nth(1).is_none() {
+    if level >= ls.len() || ls.count(name) < 2 {
         return name.to_string();
     }
     let hidden_by = (level + 1..ls.len()).rev().find(same).map(|l| ls.at(l));
@@ -2214,7 +2324,7 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
         Tm::Meta(m) => match g.meta(*m) {
             Some(v) => show_prec(g, ns, &quote(g, ns.len(), &v), p),
             // An unknown the checker has not worked out yet: by the
-            // parameter it stands for (D141), else `_`.
+            // parameter it stands for (#627), else `_`.
             None => match g.meta_origins.borrow().get(m) {
                 Some(o) => format!("?{}", o.name),
                 None => "_".into(),
@@ -2236,7 +2346,7 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
             let anon_dom = matches!(head_def(a), Some(d) if is_anon_alias(g, d));
             let s = match i {
                 Icit::Expl if anon_dom && *m != Mult::Zero => format!("{mul}{dom} -> {cod}"),
-                // A dictionary (`$d0`, D136): its class clause alone.
+                // A dictionary (`$d0`, #615): its class clause alone.
                 Icit::Impl if x.starts_with("$d") => format!("{{{dom}}} -> {cod}"),
                 Icit::Impl => format!("{{{x2}~{mul}{dom}}} -> {cod}"),
                 Icit::Expl if x.as_ref() == "_" && *m == Mult::Many => format!("{dom} -> {cod}"),
@@ -2261,7 +2371,7 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
                 h = f;
             }
             args.reverse();
-            // An inline refinement (D82) prints as written.
+            // An inline refinement (#576) prints as written.
             if let Tm::Def(d) = h {
                 if is_anon_alias(g, *d) {
                     return g.defs[d.0 as usize].name.to_string();
@@ -2463,7 +2573,7 @@ pub fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
     }
 }
 
-/// An inline refinement `(n~Int, n >= 5)` (D82): an alias with no name of
+/// An inline refinement `(n~Int, n >= 5)` (#576): an alias with no name of
 /// its own, named by its text.
 pub fn is_anon_alias(g: &Globals, d: DefId) -> bool {
     g.defs[d.0 as usize].name.starts_with('(')
@@ -2488,8 +2598,7 @@ pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
         let h = t.head();
         if let Tm::Meta(m) = h {
             if g.meta(*m).is_some() {
-                let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());
-                return Some(fix_mults(g, &quote(g, l, &eval(g, &env, t))));
+                return Some(fix_mults(g, &quote(g, l, &eval(g, &g.id_env(l), t))));
             }
         }
         let rc = |x: &Rc<Tm>, k: usize| go(g, l + k, x).map(Rc::new);
@@ -2576,7 +2685,7 @@ fn fix_mults(g: &Globals, t: &Tm) -> Tm {
 /// that isn't a bound variable, M25): solve the heads and the arguments
 /// apart, as Haskell does for type constructors. `t a` is a variable or a
 /// type constructor applied to arguments.
-/// The head of a value, for inverting a function by it (D175).
+/// The head of a value, for inverting a function by it (#659).
 #[derive(PartialEq)]
 enum RigidHead {
     TyCon(TyId),
@@ -2597,7 +2706,7 @@ fn rigid_head(v: &Val) -> Option<RigidHead> {
     })
 }
 
-/// D175: a `match` stuck on an unknown (`futures ?ts`, unfolded) must equal a
+/// #659: a `match` stuck on an unknown (`futures ?ts`, unfolded) must equal a
 /// value with a rigid head (`(Future Nat, Future String)`). If every arm of
 /// the `match` gives a different rigid head ("constructor-headed", as in
 /// Agda), the arm with the value's head is the only one that can: the
@@ -2611,10 +2720,10 @@ fn invert_case(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Op
     let mut heads = Vec::new();
     let mut found = None;
     for (con, n, body) in &c.branches {
-        let mut e = (**env).clone();
+        let mut e = env.clone();
         // The fields, unknown: far above any context.
         e.extend((0..*n).map(|k| Val::var(usize::MAX / 2 + k)));
-        let h = rigid_head(&force(g, eval(g, &Rc::new(e), body)))?;
+        let h = rigid_head(&force(g, eval(g, &e, body)))?;
         if heads.contains(&h) {
             return None;
         }
@@ -2654,7 +2763,7 @@ fn first_order(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Op
             let mut ts: Vec<Tm> = prefix.iter().map(|a| quote(g, l + 1, a)).collect();
             ts.push(Tm::Var(0));
             let lam = Tm::Lam(Rc::from("y"), Mult::Many, Icit::Expl, Rc::new(Tm::TyConApp(*id, ts)));
-            let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());
+            let env = (0..l).map(Val::var).collect::<crate::core::Env>();
             let f = eval(g, &env, &lam);
             Some(unify(g, l, &head, &f).and_then(|_| unify(g, l, x, last)))
         }

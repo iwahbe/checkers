@@ -1,4 +1,4 @@
-//! `match`: compile nested patterns to case trees and check exhaustiveness (D4).
+//! `match`: compile nested patterns to case trees and check exhaustiveness (#498).
 //!
 //! A classic clause-matrix compiler. Each row is a list of (occurrence, pattern)
 //! pairs; occurrences are locals. Arm bodies are elaborated at the leaves (a
@@ -59,7 +59,7 @@ pub struct PatState {
     bad: bool,
     /// Arms already reported for dropping a resource (each arm once).
     dropped: Vec<Span>,
-    /// Cases left out, each an obligation that it can't occur (D144 e).
+    /// Cases left out, each an obligation that it can't occur (#633 e).
     uncovered: Vec<Obligation>,
     /// The arms some value reaches (the others are W021).
     reached: Vec<Span>,
@@ -134,7 +134,7 @@ impl Elab {
         }
     }
 
-    /// A case the arms leave out (D144 e): an obligation that it can't
+    /// A case the arms leave out (#633 e): an obligation that it can't
     /// occur here, or in a specification (no obligations) an error.
     fn uncovered(&mut self, cx: &Cx, item: String) {
         if self.pm.unreached {
@@ -157,7 +157,7 @@ impl Elab {
         let uncovered = std::mem::take(&mut self.pm.uncovered);
         if !self.pm.bad {
             self.obligations.extend(uncovered);
-            // The standard library and dependencies aren't reported (D144).
+            // The standard library and dependencies aren't reported (#633).
             let own = !self.stdlib_mode && self.package_of(&self.cur) == ".";
             for a in arms.iter().filter(|_| own) {
                 if !self.pm.reached.contains(a) && a.start < SYNTHETIC {
@@ -361,7 +361,7 @@ impl Elab {
                 (l, Some((st, tyt)))
             }
         };
-        // Completing a pattern (D142): the type matched.
+        // Completing a pattern (#626): the type matched.
         if arms.iter().any(|(p, _, _)| matches!(&p.kind, PatKind::Var(n) if Self::is_cursor(n))) {
             let ty = cx.ty_of(occ);
             self.note_scrutinee(cx, &ty);
@@ -699,7 +699,7 @@ impl Elab {
     }
 
     /// `let (x, fs) = op fs` where `fs` holds no resource: an operation on
-    /// an authority (`Fs`, `Term`, …) returns only its result (D171).
+    /// an authority (`Fs`, `Term`, …) returns only its result (#658).
     fn authority_hint(&mut self, cx: &Cx, pat: &Pattern, ps: &[Pattern], occ: usize) {
         let Some(PatKind::Var(name)) = ps.last().map(|p| &p.kind) else { return };
         let Some(l) = cx.lookup(name) else { return };
@@ -750,7 +750,7 @@ impl Elab {
         let PatKind::Tuple(ps) = &pat.kind else { unreachable!() };
         // Rows may take the tuple apart into different numbers of parts:
         // split at the fewest, the longer patterns' tails as one (`(x, y, z)`
-        // is `(x, (y, z))`, D174).
+        // is `(x, (y, z))`, #673).
         let n = rows
             .iter()
             .flat_map(|r| r.pats.iter())
@@ -952,7 +952,7 @@ impl Elab {
 
     /// The constructor a pattern's name means: one of the type of the value
     /// matched (`hint`), whether or not it is imported; else one in scope.
-    /// An abstract type of another module shows no constructors (D155).
+    /// An abstract type of another module shows no constructors (#637).
     fn pattern_con(&self, name: &str, hint: Option<TyId>) -> Option<ConId> {
         if let Some(t) = hint.filter(|t| self.sealed_from(*t).is_none()) {
             let ti = &self.g.tys[t.0 as usize];
@@ -970,7 +970,7 @@ impl Elab {
     fn pat_ctor(&mut self, p: &Pattern, hint: Option<TyId>) -> Option<(ConId, Option<Vec<Pattern>>)> {
         let wk = self.g.well_known.clone();
         let unknown = |this: &mut Self, name: &ast::Ident| {
-            // A constructor of an abstract type of another module (D155).
+            // A constructor of an abstract type of another module (#637).
             if let Some(t) = hint.filter(|t| this.sealed_from(*t).is_some()) {
                 let ti = &this.g.tys[t.0 as usize];
                 let d = if ti.ctors.iter().any(|c| *this.g.cons[c.0 as usize].name == *name.name) {
@@ -1078,7 +1078,7 @@ impl Elab {
             let sub = cx.locals[occ].sub.or(cx.locals[occ].param);
             let sub_cond = if cx.locals[occ].sub.is_some() { cx.locals[occ].sub_cond } else { None };
             for (n, m, _, fty) in &fields {
-                let ty = eval(&self.g, &Rc::new(env.clone()), fty);
+                let ty = eval(&self.g, &crate::core::Env::from(env.clone()), fty);
                 let mult = if *m == Mult::Zero { Mult::Zero } else { Mult::Many };
                 let l = cx.bind(&format!("${n}"), ty, mult);
                 cx.locals[l].sub = sub;
@@ -1184,7 +1184,7 @@ impl Elab {
             let givens_before = self.givens.len();
             let mut never = false;
             if let Some(teqs) = self.con_teqs.get(&c).cloned() {
-                let env = Rc::new(all.to_vec());
+                let env = crate::core::Env::from(all.to_vec());
                 let eqs = teqs.iter().map(|q| (eval(&self.g, &env, &q.lhs), eval(&self.g, &env, &q.rhs), q.text.clone())).collect();
                 self.assume_teqs(eqs);
                 if self.contradiction().is_some() {
@@ -1219,14 +1219,14 @@ impl Elab {
                 if !super::has_meta(&tm) && mentions_var(&tm, cx.lvl() - 1 - occ) {
                     let mut env = cx.env.to_vec();
                     env[occ] = Val::Con(c, all.clone());
-                    eval(&self.g, &Rc::new(env), &tm)
+                    eval(&self.g, &crate::core::Env::from(env), &tm)
                 } else {
                     expected.clone()
                 }
             } else {
                 expected.clone()
             };
-            // So do the types of the variables in scope (D173): `x~futures s a`
+            // So do the types of the variables in scope (#664): `x~futures s a`
             // is a `Future a` in the `One` arm of `match s`, as in Agda and
             // Idris. Only the type changes; the variable is the same.
             // A type that still mentions the fields (`p~(x~a -> Bool,
@@ -1244,7 +1244,7 @@ impl Elab {
                     if !super::has_meta(&tm) && mentions_var(&tm, i) {
                         let mut env = cx.env.to_vec();
                         env[occ] = Val::Con(c, all.clone());
-                        let ty = eval(&self.g, &Rc::new(env), &tm);
+                        let ty = eval(&self.g, &crate::core::Env::from(env), &tm);
                         let new = quote(&self.g, cx.lvl(), &ty);
                         if let Some(f) = self.cur_fn {
                             if self.type_linear(&tm) && self.never_linear(&new) {

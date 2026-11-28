@@ -2,7 +2,7 @@
 //!
 //! Pipeline: lex (with layout) → parse → naming lints → elaborate and
 //! type-check (with the embedded standard library) → termination and usage →
-//! run `check`s (D40). `run` then erases and interprets the program (§13).
+//! run `check`s (#532). `run` then erases and interprets the program (§13).
 
 pub mod core;
 pub mod diag;
@@ -15,6 +15,8 @@ pub mod lint;
 pub mod literate;
 pub mod native;
 pub mod overlay;
+pub mod pmap;
+pub mod pvec;
 pub mod range;
 pub mod source;
 pub mod stage;
@@ -32,7 +34,7 @@ pub struct Checked {
     pub diags: Vec<Diagnostic>,
     /// Diagnostics in standard-library modules (compiler bugs), already rendered.
     pub internal: Vec<String>,
-    /// Diagnostics in imported program modules (D53), with their files.
+    /// Diagnostics in imported program modules (#548), with their files.
     pub others: Vec<(String, SourceFile, Vec<Diagnostic>)>,
     /// Proof obligations in this file, and how many the prover discharged.
     pub obligations: usize,
@@ -42,7 +44,7 @@ pub struct Checked {
     /// Terms the prover left out for a type error it found in their sorts
     /// (§7.3): 0 in a program without type errors, or checkers has a bug.
     pub ill_sorted: usize,
-    /// The modules verified before, by name (D143), once looked up.
+    /// The modules verified before, by name (#628), once looked up.
     remembered: Option<std::collections::HashMap<String, (String, verify::Remembered)>>,
 }
 
@@ -100,7 +102,7 @@ pub fn parse_only(name: &str, text: &str) -> Checked {
     Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, staged: String::new(), ill_sorted: 0, remembered: None }
 }
 
-/// The directory `import a.b` looks in for `a/b.ck` (D53): the program's own.
+/// The directory `import a.b` looks in for `a/b.ck` (#548): the program's own.
 pub fn dir_of(name: &str) -> std::path::PathBuf {
     std::path::Path::new(name).parent().map(|p| p.to_path_buf()).unwrap_or_default()
 }
@@ -140,7 +142,7 @@ fn phase_time(name: &str, phase: &str, t: std::time::Instant) {
     }
 }
 
-/// `ckc check --json` (§15.5, D120): check `name` like `check_in`, writing
+/// `ckc check --json` (§15.5, #601): check `name` like `check_in`, writing
 /// JSON lines to `out` as each phase ends: syntax, names and types; `check`s;
 /// proofs. Every phase ends with a `done` line, also when an earlier phase's
 /// errors mean it does nothing. Returns whether there were errors.
@@ -155,7 +157,7 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
     // waiting by it.
     match &e {
         Some((e, user)) => {
-            // The doc comments' code is indexed as code (D148 f): their
+            // The doc comments' code is indexed as code (#642 f): their
             // lines' comment tokens give way to its tokens.
             let samples = literate::links_and_samples(&c.file.text, &c.module, e, user).1;
             // Each code line's start: its comment marker (`#`, and `#!`
@@ -205,10 +207,10 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
     c.errors() > 0
 }
 
-/// `ckc index` (D161): the index of every module of the package `name`'s
+/// `ckc index` (#648): the index of every module of the package `name`'s
 /// module is in, as `check --json` gives one file's: its names and tokens,
 /// then `done`. The package is the directory its module's name is relative
-/// to (`a/b.ck` is `a.b`, D53), and every `.ck` file under it. Names and
+/// to (`a/b.ck` is `a.b`, #548), and every `.ck` file under it. Names and
 /// types only: nothing is run or proved.
 pub fn index_json(name: &str, text: &str, out: &mut dyn FnMut(String)) {
     let main = overlay::absolute(std::path::Path::new(name));
@@ -255,7 +257,7 @@ pub fn index_json(name: &str, text: &str, out: &mut dyn FnMut(String)) {
     }
     let first = names.first().cloned().unwrap_or_default();
     emit_index_all(&e, &first, out);
-    // The code in their doc comments, as `check --json` indexes it (D148 f).
+    // The code in their doc comments, as `check --json` indexes it (#642 f).
     for n in &names {
         let (Some(f), Some(p)) = (e.sources.get(n), e.paths.get(n)) else { continue };
         let (module, _) = syntax::parse_module(&f.text);
@@ -266,7 +268,7 @@ pub fn index_json(name: &str, text: &str, out: &mut dyn FnMut(String)) {
     out(r#"{"kind":"done","phase":"index"}"#.to_string());
 }
 
-/// `ckc complete` (§15.5, D142): what can be written at byte column `col`
+/// `ckc complete` (§15.5, #626): what can be written at byte column `col`
 /// of line `line` (from 0) of `name`, as JSON lines: the span the
 /// completion replaces, then each candidate in order, then `done`. The
 /// names and types phase runs, with a cursor token there; nothing else.
@@ -308,7 +310,7 @@ pub fn complete_json(name: &str, text: &str, dir: &std::path::Path, line: usize,
 /// keyword, comment, string and number in it.
 /// The description of the declaration whose name starts at byte `at`: the
 /// run of `#` comment lines directly above its line, without the `#` and one
-/// space (D128).
+/// space (#617).
 pub(crate) fn doc_comment(text: &str, at: usize) -> Option<String> {
     let start = text[..at.min(text.len())].rfind('\n').map_or(0, |i| i + 1);
     let mut lines = Vec::new();
@@ -352,7 +354,7 @@ fn emit_names(e: &elab::Elab, user: &str, main: &std::path::Path, out: &mut dyn 
         let (el, ec) = f.line_byte(span.end);
         Some(format!(r#""start":[{sl},{sc}],"end":[{el},{ec}]"#))
     };
-    // The names doc comments' links name (D161): occurrences too.
+    // The names doc comments' links name (#648): occurrences too.
     let mut modules: Vec<String> = match &e.index_all {
         Some(all) => all.iter().cloned().collect(),
         None => vec![user.to_string()],
@@ -542,7 +544,7 @@ pub fn check_stdlib() -> String {
 }
 
 /// The modules whose code is checked: the standard-library modules the
-/// program loads and its dependencies' (D109), sorted; then its own imported
+/// program loads and its dependencies' (#594), sorted; then its own imported
 /// modules, and this one.
 fn program_modules(e: &elab::Elab, user: &str) -> Vec<String> {
     let mut v = std_modules(e);
@@ -550,7 +552,7 @@ fn program_modules(e: &elab::Elab, user: &str) -> Vec<String> {
     deps.sort();
     v.extend(deps);
     v.extend(e.user_modules.iter().filter(|m| e.package_of(m) == ".").cloned());
-    // A standard-library file checked by itself is among them already (D145).
+    // A standard-library file checked by itself is among them already (#629).
     if !v.iter().any(|m| m == user) {
         v.push(user.to_string());
     }
@@ -571,7 +573,7 @@ fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, mut d: Diagnostic
     if m == user {
         c.diags.push(d);
     } else if e.sources.contains_key(m) {
-        // Imported program modules and standard-library modules alike (D104).
+        // Imported program modules and standard-library modules alike (#603).
         match c.others.iter_mut().find(|o| o.0 == m) {
             Some(o) => o.2.push(d),
             None => {
@@ -628,14 +630,14 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
             route(c, e, user, &m, d);
         }
     }
-    // What the caches gave (D100, D143), on standard error.
+    // What the caches gave (#591, #628), on standard error.
     if std::env::var_os("CHECKERS_CACHE_STATS").is_some() {
         eprintln!("cache: {reused} of {asked} Z3 answers reused");
         if verify::modules_dir().is_some() {
             eprintln!("cache: {} of {} modules verified before", known.len(), all.len());
         }
     }
-    // Remembered only from a check with no errors at all (D143 c).
+    // Remembered only from a check with no errors at all (#628 c).
     if c.errors() == 0 {
         for (m, v) in &fresh {
             if let Some(k) = keys.get(m) {
@@ -652,7 +654,7 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
 /// Parse, lint and type-check; also returns the elaborator and the module name.
 fn elaborate(name: &str, text: &str, dir: &std::path::Path) -> (Checked, Option<(elab::Elab, String)>) {
     let mut c = parse_only(name, text);
-    // Every declaration the parser recovered is checked (D122).
+    // Every declaration the parser recovered is checked (#599).
     let stem = std::path::Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let mut e = elab::check_module(&stem, &c.file, &c.module, Some(dir));
     let user = c.module.name.as_ref().map(|q| q.dotted()).unwrap_or(stem);
@@ -661,7 +663,7 @@ fn elaborate(name: &str, text: &str, dir: &std::path::Path) -> (Checked, Option<
     }
     let syntax: Vec<(String, source::Span)> = c.diags.iter().filter(|d| d.is_error()).map(|d| (user.clone(), d.span)).collect();
     e.set_aside_broken(&syntax);
-    // Unused code (D144): only when everything resolved, or a name that
+    // Unused code (#633): only when everything resolved, or a name that
     // failed to would look unused.
     if c.errors() == 0 {
         let mut own: Vec<String> = e.user_modules.iter().filter(|m| e.package_of(m) == ".").cloned().collect();
@@ -713,7 +715,7 @@ fn remap_json(l: &str, from: &str, to: &str, file: &SourceFile, s: &literate::Sa
     Some(done)
 }
 
-/// The index of a doc comment's code block, at its place in `file` (D148 f).
+/// The index of a doc comment's code block, at its place in `file` (#642 f).
 fn emit_sample_index(file: &SourceFile, s: &literate::Sample, dir: &std::path::Path, main: &std::path::Path, out: &mut dyn FnMut(String)) {
     let name = format!("{}.ck", s.name);
     let marker = std::path::PathBuf::from(format!("/\u{1}doc/{name}"));
@@ -729,7 +731,7 @@ fn emit_sample_index(file: &SourceFile, s: &literate::Sample, dir: &std::path::P
     emit_index(&e, &user, &marker, &mut remap);
 }
 
-/// Completion in a doc comment (D148 f): in a code block, as in code; after
+/// Completion in a doc comment (#642 f): in a code block, as in code; after
 /// `[` in its text, the names a link can name. `false` if `at` is in none.
 fn complete_in_doc(name: &str, file: &SourceFile, dir: &std::path::Path, main: &std::path::Path, at: usize, out: &mut dyn FnMut(String)) -> bool {
     let (module, _) = syntax::parse_module(&file.text);
@@ -777,26 +779,29 @@ fn complete_in_doc(name: &str, file: &SourceFile, dir: &std::path::Path, main: &
     false
 }
 
-/// The doc comments' links and code (D148 e): W030–W033.
+/// The doc comments' links and code (#642 e): W030–W033.
 fn doc_comments(c: &mut Checked, e: &elab::Elab, user: &str, dir: &std::path::Path) {
     let (diags, samples) = literate::links_and_samples(&c.file.text, &c.module, e, user);
     c.diags.extend(diags);
-    // A sample is a module of the program its module is in (D148 d).
+    // A sample is a module of the program its module is in (#642 d).
     let root = e.base_dir.clone().unwrap_or_else(|| dir.to_path_buf());
     for s in &samples {
-        c.diags.extend(literate::sample_diagnostics(s, &root));
+        c.diags.extend(literate::sample_diagnostics(s, &root, user));
     }
 }
 
-/// Evaluate the module's `check` declarations (D40).
+/// Evaluate the module's `check` declarations (#532).
 fn run_checks(c: &mut Checked, e: &elab::Elab, user: &str) {
-    // A module verified before has passed its `check`s (D143).
+    // From here on native code runs the program's code: its runtime errors
+    // never name another package's private functions (§6 rule 9).
+    e.hide_private(user);
+    // A module verified before has passed its `check`s (#628).
     let known: std::collections::HashSet<String> = remembered(c, e, user).keys().cloned().collect();
     let mods: Vec<String> = program_modules(e, user).into_iter().filter(|m| !known.contains(m)).collect();
     if !e.checks.iter().any(|(m, _, _)| mods.contains(m)) {
         return;
     }
-    // Native code (D80): one in-memory module for all of this program's checks.
+    // Native code (#555): one in-memory module for all of this program's checks.
     let mut ev = native::eval::Evaluator::new(&e.g);
     for (m, span, t) in &e.checks {
         if !mods.contains(m) {
@@ -841,12 +846,12 @@ pub struct Ran {
     pub code: u8,
 }
 
-/// Check and prove `text`, then call its exported `main` with `args` (D43,
+/// Check and prove `text`, then call its exported `main` with `args` (#535,
 /// §13.4), as native code (§14). The program writes to this process's
 /// standard streams, so the report is printed to standard error before it
 /// runs; the returned report is empty. Imported modules are looked up in
 /// `dir`; `threads`: threads for behaviours and `par` (1: the deterministic
-/// FIFO scheduler, D67).
+/// FIFO scheduler, #566).
 pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], threads: usize) -> Ran {
     let (e, main, staged, report) = match ready_to_run(name, text, dir, false) {
         Ok(r) => r,
@@ -864,7 +869,7 @@ pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Pat
         Err(ran) => return ran,
     };
     // A release build relies on no `admit` anywhere in the program, its
-    // dependencies or the standard library (§7.4, D116); axioms stay allowed.
+    // dependencies or the standard library (§7.4, #604); axioms stay allowed.
     if release && !e.admits.is_empty() {
         let mut admits: Vec<&elab::Admit> = e.admits.iter().collect();
         admits.sort_by(|a, b| (a.module.as_str(), a.span.start).cmp(&(b.module.as_str(), b.span.start)));

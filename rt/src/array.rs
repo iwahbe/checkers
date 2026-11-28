@@ -1,4 +1,4 @@
-//! Arrays (D133, SPEC §14): `Array a`, its elements stored by layout.
+//! Arrays (#624, SPEC §14): `Array a`, its elements stored by layout.
 //!
 //! An array of `U8` is a bytes object (`K_BYTES`), so `Bytes` is unchanged.
 //! Any other array is a `K_ARRAY` object: its layout in the header's tag,
@@ -192,7 +192,7 @@ pub fn held(a: W) -> impl Iterator<Item = W> {
 }
 
 /// A new array of `n` elements laid out as `l`, its elements unset. A size
-/// no machine word holds is one no machine has: out of memory (D184).
+/// no machine word holds is one no machine has: out of memory (#667).
 fn alloc_array(l: Layout, n: usize) -> W {
     let bytes = n.checked_mul(l.width()).and_then(|b| b.checked_next_multiple_of(8)).and_then(|b| b.checked_add(HDR + 16));
     let Some(size) = bytes else { crate::fatal("out of memory") };

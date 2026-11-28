@@ -1,4 +1,4 @@
-//! Blocking operations free the thread (M16, D113, SPEC §13.8): checks that
+//! Blocking operations free the thread (M16, #607, SPEC §13.8): checks that
 //! need a program's input to arrive after it has printed something.
 
 use std::io::{BufRead, BufReader, Write};

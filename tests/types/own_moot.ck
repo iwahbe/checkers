@@ -1,6 +1,6 @@
 module own_moot
 
-# `own` on a function type's parameter (D172 b): written as `(v~own a -> b)`,
+# `own` on a function type's parameter (#672 b): written as `(v~own a -> b)`,
 # and implied when the parameter's type may be a resource. Once that type is
 # known to hold none, `own` means nothing.
 

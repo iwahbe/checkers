@@ -1,4 +1,4 @@
-# Continuation lines (D92).
+# Continuation lines (#585).
 module continuation
 
 fn sig_aligned a b -> r : a~Nat, b~Nat,

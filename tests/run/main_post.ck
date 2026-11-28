@@ -1,6 +1,6 @@
 module main_post
 
-# A postcondition of `fn main` is allowed (D181).
+# A postcondition of `fn main` is allowed (#668).
 
 import std.system (System, ExitCode)
 

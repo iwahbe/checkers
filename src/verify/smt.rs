@@ -5,7 +5,7 @@
 //! becomes the parametric datatype `Parsed a`. Functions defined in the module
 //! (and imported `transparent` ones) are reflected as `define-fun-rec`,
 //! instantiated per type; others are uninterpreted. Every application of a
-//! function with a postcondition contributes that postcondition (D50).
+//! function with a postcondition contributes that postcondition (#538).
 
 use crate::core::{eval, force, max_var, quote, CaseTm, ConId, DefId, Lit, Mult, Prim, Tm, TyId, Val};
 use crate::elab::{has_meta, Elab, ObLocal, Obligation};
@@ -45,16 +45,16 @@ pub enum Sort {
     Int,
     Bool,
     Str,
-    /// An array (D133): a sequence of its elements' sort.
+    /// An array (#624): a sequence of its elements' sort.
     Seq(Box<Sort>),
-    /// A multiset of elements of a sort: counts (D47, D138).
+    /// A multiset of elements of a sort: counts (#553, #625).
     Bag(Box<Sort>),
     /// A datatype with its type arguments.
     Data(TyId, Vec<Sort>),
     Tuple(Vec<Sort>),
     /// An uninterpreted sort: an abstract type or a type variable.
     Unin(String, Vec<Sort>),
-    /// A function value (D139): Z3's array from its parameter's sort to its
+    /// A function value (#630): Z3's array from its parameter's sort to its
     /// result's, curried (`Int -> Int -> Int` is an array of arrays), so a
     /// partial application is a value too; applying it is `select`, a
     /// lambda is a `lambda`.
@@ -117,7 +117,7 @@ fn ty_sym(e: &Elab, t: TyId) -> String {
     sym(&format!("{}.{}", ti.module, ti.name))
 }
 
-fn con_sym(e: &Elab, c: ConId) -> String {
+pub(crate) fn con_sym(e: &Elab, c: ConId) -> String {
     let ci = &e.g.cons[c.0 as usize];
     let ti = &e.g.tys[ci.ty.0 as usize];
     sym(&format!("{}.{}", ti.module, ci.name))
@@ -288,7 +288,7 @@ impl Focus {
 /// conditions above it, and Z3 unfolds the call whenever that case's guard
 /// holds of the call's own arguments, by propagation alone, which its limit on
 /// unfolding depth doesn't bound. A `decreasing` definition is such a case:
-/// its only split is `D` (its `Nat` parameters non-negative, D118), true again
+/// its only split is `D` (its `Nat` parameters non-negative), true again
 /// of each recursive call. So such a condition is passed to a definition of
 /// its own, as a parameter that Z3 splits on (`lifted`): unfolding the call
 /// then waits for the search to decide the condition.
@@ -505,24 +505,76 @@ fn cond_copies(x: &Sx, index: &HashMap<&str, usize>, clean: &[bool], names: &mut
     }
 }
 
-/// `binder` (`lam` or `all` followed by a mark) is named by height: one
-/// more than the greatest of the binders inside it, and 0 if there are none,
-/// so a term is spelled the same wherever it occurs in a query, whatever it is
-/// inside. The binders of the lambdas and `forall`s around it are still marks,
-/// so none is captured: a binder's height is greater than those inside it.
+/// The binder `text` opens (`lam` or `all` followed by `mark`) named by
+/// height: one more than the greatest of the binders inside it that one of
+/// its own variables occurs under, and 0 if there are none. Its name depends
+/// only on where its variables are, so a term is spelled the same wherever it
+/// occurs in a query, whatever it is inside (#412), and whatever terms Z3
+/// puts for the variables of a definition or an axiom it is in (#713): Z3
+/// tells lambdas apart by their binders' names, and a term put for a variable
+/// never mentions the binder's own. None is captured: a variable's binder is
+/// higher than every binder it occurs under. The binders of the lambdas and
+/// `forall`s around it are still marks.
 fn name_binders(text: &str, mark: &str) -> String {
+    let own = [format!("|lam{mark}."), format!("|all{mark}.")];
+    // The height of the binder a binding list's first variable names.
+    let height_of = |sym: &str| -> Option<usize> {
+        let rest = sym.strip_prefix("|lam").or_else(|| sym.strip_prefix("|all"))?;
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        (digits > 0 && rest[digits..].starts_with('.')).then(|| rest[..digits].parse().ok())?
+    };
+    let b = text.as_bytes();
+    // One entry per open parenthesis: the height of the binder it opens.
+    let mut open: Vec<Option<usize>> = Vec::new();
+    // The parenthesis that opens a binder whose variables aren't read yet.
+    let mut pending: Option<usize> = None;
+    let mut after_open = false;
     let mut height = 0;
-    for prefix in ["|lam", "|all"] {
-        let mut rest = text;
-        while let Some(k) = rest.find(prefix) {
-            rest = &rest[k + prefix.len()..];
-            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-            if digits > 0 && rest[digits..].starts_with('.') {
-                height = height.max(rest[..digits].parse::<usize>().unwrap_or(0) + 1);
+    let mut i = 0;
+    while i < b.len() {
+        let start = i;
+        match b[i] {
+            b'(' => {
+                open.push(None);
+                after_open = true;
+                i += 1;
+                continue;
+            }
+            b')' => {
+                open.pop();
+                i += 1;
+            }
+            c if c.is_ascii_whitespace() => {
+                i += 1;
+                continue;
+            }
+            b'|' => {
+                i += 1 + b[i + 1..].iter().position(|&c| c == b'|').map_or(b.len() - i - 1, |k| k + 1);
+                let sym = &text[start..i];
+                if let Some(p) = pending.take() {
+                    open[p] = height_of(sym);
+                } else if own.iter().any(|o| sym.starts_with(o.as_str())) {
+                    if let Some(h) = open.iter().flatten().max() {
+                        height = height.max(h + 1);
+                    }
+                }
+            }
+            b'"' => {
+                // A string literal (`""` inside is two of these).
+                i += 1 + b[i + 1..].iter().position(|&c| c == b'"').map_or(b.len() - i - 1, |k| k + 1);
+            }
+            _ => {
+                while i < b.len() && !b[i].is_ascii_whitespace() && !matches!(b[i], b'(' | b')' | b'|' | b'"') {
+                    i += 1;
+                }
+                if after_open && matches!(&text[start..i], "lambda" | "forall" | "exists") {
+                    pending = Some(open.len() - 1);
+                }
             }
         }
+        after_open = false;
     }
-    text.replace(&format!("|lam{mark}."), &format!("|lam{height}.")).replace(&format!("|all{mark}."), &format!("|all{height}."))
+    text.replace(&own[0], &format!("|lam{height}.")).replace(&own[1], &format!("|all{height}."))
 }
 
 /// A `lambda`, `forall` or `exists`.
@@ -711,7 +763,7 @@ fn mentions(x: &Sx, a: &Sx) -> bool {
 
 pub struct Query {
     pub text: String,
-    /// The full query without tables' elements (D153), when it has some.
+    /// The full query without tables' elements (#638), when it has some.
     pub no_tables: Option<String>,
     /// The same query without the quantified `Nat` axioms: Z3 is complete on
     /// it, so it can find a counterexample where the full query is `unknown`.
@@ -740,14 +792,14 @@ pub struct Query {
     pub dropped: Vec<String>,
     /// The obligation's facts left out for a type error (§7.3), by index.
     pub ill_typed: Vec<usize>,
-    /// Some facts in scope are `forall`s, not given to the solver (D137):
+    /// Some facts in scope are `forall`s, not given to the solver (#632):
     /// a model may break them.
     pub foralls: bool,
     /// (SMT name, display name) of the locals, for a counterexample.
     pub shown: Vec<(String, String)>,
     /// The SMT names of `String` locals (shown as text, not bytes).
     pub string_vars: Vec<String>,
-    /// Shown variables that are arrays of anything but `U8` (D133).
+    /// Shown variables that are arrays of anything but `U8` (#624).
     pub array_vars: Vec<String>,
 }
 
@@ -789,7 +841,7 @@ pub struct Names {
 type Table = (Delta, Vec<String>);
 
 thread_local! {
-    /// Tables' translations (D153), for the elaborator they were made with:
+    /// Tables' translations (#638), for the elaborator they were made with:
     /// the same in every query of every module it checks.
     static TABLES: std::cell::RefCell<(u64, BTreeMap<String, Table>)> = const { std::cell::RefCell::new((0, BTreeMap::new())) };
 }
@@ -805,7 +857,7 @@ pub struct Builder<'a> {
     computed: HashMap<TyId, bool>,
     /// Uninterpreted functions: name → declaration.
     funs: BTreeMap<String, String>,
-    /// A local function's type, over the locals before it (D84).
+    /// A local function's type, over the locals before it (#580).
     fun_tys: BTreeMap<String, (usize, Tm)>,
     /// Reflected instances waiting for / with a definition.
     insts: BTreeMap<Inst, Option<Defn>>,
@@ -819,7 +871,7 @@ pub struct Builder<'a> {
     inst_queue: Vec<Inst>,
     consts: Vec<String>,
     asserts: Vec<String>,
-    /// Constant tables' elements (D153): only in the full query.
+    /// Constant tables' elements (#638): only in the full query.
     table_facts: Vec<String>,
     /// `Nat` results of functions, as pattern-guarded axioms (emitted after the definitions).
     axioms: BTreeMap<String, String>,
@@ -835,6 +887,9 @@ pub struct Builder<'a> {
     effect_sorts: HashMap<String, Sort>,
     /// Terms whose type's facts were asserted (once each).
     fact_seen: HashSet<String>,
+    /// Each `++` of sequences in the query, by its term: its two operands
+    /// (`index_concat`).
+    concats: HashMap<String, (String, String)>,
     /// Translating a reflected body: don't collect postconditions or facts
     /// for the query.
     in_def: bool,
@@ -871,7 +926,7 @@ pub struct Builder<'a> {
     /// The sorts a constructor's recognizer is applied at (see `query`).
     tested: BTreeSet<Sort>,
     /// Give `forall` facts to Z3, quantified: only to check a counterexample
-    /// against them, never to prove (D137).
+    /// against them, never to prove (#632).
     foralls: bool,
     /// Name each fact of the obligation, `|fact.k|` for its `k`th, and ask
     /// for the unsat core: which of them contradict each other.
@@ -906,6 +961,7 @@ impl<'a> Builder<'a> {
             effect_sorts: HashMap::new(),
             fun_args: 0,
             fact_seen: HashSet::new(),
+            concats: HashMap::new(),
             in_def: false,
             body_posts: None,
             bodies: false,
@@ -937,7 +993,7 @@ impl<'a> Builder<'a> {
 
     /// Give the `forall` facts in scope to Z3 as quantified formulas, so a
     /// model of the query satisfies them: a counterexample to check one
-    /// against (D137 keeps them out of proofs).
+    /// against (#632 keeps them out of proofs).
     pub fn with_foralls(mut self) -> Builder<'a> {
         self.foralls = true;
         self
@@ -1051,7 +1107,7 @@ impl<'a> Builder<'a> {
         if !has_meta(t) {
             return t.clone();
         }
-        let env = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let env = (0..n).map(Val::var).collect::<crate::core::Env>();
         quote(&self.e.g, n, &eval(&self.e.g, &env, t))
     }
 
@@ -1174,7 +1230,7 @@ impl<'a> Builder<'a> {
                     _ => Val::var(n + k),
                 })
                 .collect();
-            let v = eval(&self.e.g, &Rc::new(vars), t);
+            let v = eval(&self.e.g, &crate::core::Env::from(vars), t);
             if let Some((_, r)) = self.reps.iter().find(|(m, _)| self.e.same_type_forced(m, &v)).cloned() {
                 // The representative is about the obligation's locals too.
                 let tm = quote(&self.e.g, n, &r);
@@ -1202,7 +1258,7 @@ impl<'a> Builder<'a> {
                 for t in ts {
                     ss.push(self.sort_of(env, t)?);
                 }
-                // `(a, (b, c))` is `(a, b, c)` (D174).
+                // `(a, (b, c))` is `(a, b, c)` (#673).
                 if let Some(Sort::Tuple(ws)) = ss.last().filter(|_| ss.len() >= 2).cloned() {
                     if ws.len() >= 2 {
                         ss.pop();
@@ -1250,7 +1306,7 @@ impl<'a> Builder<'a> {
                         // applied to variables past `env`, standing for the
                         // arguments kept by its key.
                         let n = env.len();
-                        let empty = Rc::new(Vec::new());
+                        let empty = crate::core::Env::new();
                         let mut extra: Vec<Ent> = Vec::new();
                         let mut venv: Vec<Val> = Vec::with_capacity(n);
                         for (k, e) in env.iter().enumerate() {
@@ -1262,7 +1318,7 @@ impl<'a> Builder<'a> {
                                             let base = n + extra.len();
                                             extra.extend(ents.iter().cloned());
                                             let args: Vec<Val> = (0..m).map(|j| Val::var(base + j)).collect();
-                                            crate::core::eval(&self.e.g, &Rc::new(args), &f)
+                                            crate::core::eval(&self.e.g, &crate::core::Env::from(args), &f)
                                         }
                                         _ => Val::var(k),
                                     },
@@ -1272,7 +1328,7 @@ impl<'a> Builder<'a> {
                             };
                             venv.push(v);
                         }
-                        let v = crate::core::force(&self.e.g, crate::core::eval(&self.e.g, &Rc::new(venv), t));
+                        let v = crate::core::force(&self.e.g, crate::core::eval(&self.e.g, &crate::core::Env::from(venv), t));
                         match &v {
                             Val::Neutral(crate::core::Head::Var(l), sp) if sp.len() == 1 && *l < n => {
                                 let crate::core::Elim::Field(c, i) = sp[0] else { return out("a class's type at a dictionary it can't name") };
@@ -1303,11 +1359,11 @@ impl<'a> Builder<'a> {
                     }
                     Tm::Def(d) => {
                         // A type function applied to closed arguments
-                        // (`values (Last Nat)`, D176): the type it gives.
+                        // (`values (Last Nat)`, #662): the type it gives.
                         let mut fv = std::collections::BTreeSet::new();
                         crate::core::free_vars(t, 0, &mut fv);
                         if fv.is_empty() && !self.e.alias_preds.contains_key(d) {
-                            let v = crate::core::eval(&self.e.g, &Rc::new(Vec::new()), t);
+                            let v = crate::core::eval(&self.e.g, &crate::core::Env::new(), t);
                             if let Some(u) = crate::core::unfold(&self.e.g, &v) {
                                 let u = crate::core::force_meta(&self.e.g, u);
                                 let stuck = matches!(&u, Val::Neutral(crate::core::Head::Def(d2), _) if d2 == d)
@@ -1342,7 +1398,7 @@ impl<'a> Builder<'a> {
             }
             _ if wk.nat.is_none() => out("no prelude"),
             Tm::Pi(..) => {
-                // A function value (D139): its parameters that aren't erased.
+                // A function value (#630): its parameters that aren't erased.
                 let mut ps = Vec::new();
                 let mut inner = env.to_vec();
                 let mut t = t.clone();
@@ -1532,7 +1588,7 @@ impl<'a> Builder<'a> {
         }
         let ti = &self.e.g.tys[id.0 as usize];
         // A type without constructors, or one with a field whose type is
-        // computed from its parameters (`Spawned ss`, D112), is opaque to Z3:
+        // computed from its parameters (`Spawned ss`, #611), is opaque to Z3:
         // it knows nothing about its values, which can only prove less.
         if ti.ctors.is_empty() || self.computed_fields(id) {
             let name = format!("{}.{}", ti.module, ti.name);
@@ -1867,7 +1923,7 @@ impl<'a> Builder<'a> {
                 Ent::TyVar(format!("{}#{lvl}", l.name))
             }
             Val::Pi(..) => {
-                // A local function: a function value (D139), so it can be
+                // A local function: a function value (#630), so it can be
                 // passed on as it is.
                 let tyt = quote(&self.e.g, lvl, &ty);
                 let s = self.sort_of(&env, &tyt)?;
@@ -1895,7 +1951,7 @@ impl<'a> Builder<'a> {
                 // What its type says beyond the sort: a refinement alias's
                 // predicates (`U8`), its parts' and fields' (`(Char,
                 // (stop~Nat, k < stop))`, `Parsed Members …`), its
-                // constructor's invariants (D11).
+                // constructor's invariants (#505).
                 let raw = quote(&self.e.g, lvl, &l.ty);
                 let facts = self.value_terms(&env, &raw, &name, &s);
                 self.asserts.extend(facts.into_iter().filter(|t| Some(t) != nat.as_ref()));
@@ -1967,7 +2023,7 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// A call `f a…` of a local function whose type is refined (D84): where
+    /// A call `f a…` of a local function whose type is refined (#580): where
     /// its preconditions hold at the arguments, its postconditions hold at
     /// the result.
     /// `ats` are the explicit arguments' terms and sorts, as the call has them.
@@ -2000,10 +2056,10 @@ impl<'a> Builder<'a> {
         });
     }
 
-    /// A local function of a refined type (D84) is so at every argument, not
+    /// A local function of a refined type (#580) is so at every argument, not
     /// only at the calls written: where its preconditions hold, its
     /// postconditions hold, for each application Z3 makes (unfolding `map f`,
-    /// D139). A pattern-guarded axiom, like `nat_axiom`'s.
+    /// #630). A pattern-guarded axiom, like `nat_axiom`'s.
     fn fun_axiom(&mut self, name: &str, lvl: usize) {
         // Its terms are over the axiom's bound variables: facts about them
         // (`Seq.size x0` is a `Nat`) can't be stated outside it (#210).
@@ -2047,11 +2103,11 @@ impl<'a> Builder<'a> {
     }
 
     /// What a value `x` of type `ty` (sort `xs`) satisfies beyond its sort
-    /// (D71, D82): a `Nat` is non-negative, a refinement alias's predicates
+    /// (#554, #576): a `Nat` is non-negative, a refinement alias's predicates
     /// hold, and so do those of its parts and fields, nested: a tuple's
     /// parts, and a datatype's fields at their declared types, with the
     /// type's arguments put in (`Pair Nat (j~Nat, i <= j)`, `Parsed Members
-    /// …`), each constructor's under its tester, with its invariants (D11).
+    /// …`), each constructor's under its tester, with its invariants (#505).
     /// As facts to assume of a value the program has.
     fn value_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
         self.type_terms(env, ty, x, xs, Some(&mut Vec::new()), true)
@@ -2079,7 +2135,7 @@ impl<'a> Builder<'a> {
     /// `top`, only what is said of the parts.
     fn type_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort, inside: Option<&mut Vec<String>>, top: bool) -> Vec<String> {
         let mut out = Vec::new();
-        // A function's refinements are its own (`fun_axiom`, D139).
+        // A function's refinements are its own (`fun_axiom`, #630).
         if matches!(xs, Sort::Fun(..)) {
             return out;
         }
@@ -2089,7 +2145,7 @@ impl<'a> Builder<'a> {
         let ty = match ty.head() {
             Tm::Def(_) => {
                 let n = env.len();
-                let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
                 match crate::core::class_type_at(&self.e.g, &eval(&self.e.g, &vars, &ty)) {
                     Some(v) => quote(&self.e.g, n, &v),
                     None => ty,
@@ -2120,7 +2176,7 @@ impl<'a> Builder<'a> {
         let shape = match ty.head() {
             Tm::Def(_) => {
                 let n = env.len();
-                let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
                 quote(&self.e.g, n, &force(&self.e.g, eval(&self.e.g, &vars, &ty)))
             }
             _ => ty,
@@ -2130,7 +2186,7 @@ impl<'a> Builder<'a> {
                 let mut inside = inside;
                 let n = ss.len();
                 for (k, t) in ts.iter().enumerate() {
-                    // A last part that is a tuple is flattened (D174): the
+                    // A last part that is a tuple is flattened (#673): the
                     // last of `ts` is the tuple of the remaining components.
                     let (part, ps) = if k + 1 == ts.len() && ts.len() < n {
                         let rest = Sort::Tuple(ss[k..].to_vec());
@@ -2149,7 +2205,7 @@ impl<'a> Builder<'a> {
                 if let Some(inside) = inside {
                     // The type, the same at any depth of locals.
                     let n = env.len();
-                    let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                    let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
                     let key = format!("{:?}", quote(&self.e.g, 1 << 20, &eval(&self.e.g, &vars, &shape)));
                     if !inside.contains(&key) && inside.len() < DATA_DEPTH {
                         inside.push(key);
@@ -2184,7 +2240,7 @@ impl<'a> Builder<'a> {
             return Vec::new();
         }
         let n = env.len();
-        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
         let params: Vec<Val> = args.iter().map(|a| eval(&self.e.g, &vars, a)).collect();
         let senv = self.sort_env(id, sargs);
         let ctors = self.e.g.tys[id.0 as usize].ctors.clone();
@@ -2199,7 +2255,7 @@ impl<'a> Builder<'a> {
                 match fs.iter().find(|(i, _)| *i == k) {
                     Some((_, fsort)) => {
                         let sel = format!("({} {x})", sel_sym(self.e, c, k));
-                        let fty = quote(&self.e.g, n + k, &eval(&self.e.g, &Rc::new(vals.clone()), &f.3));
+                        let fty = quote(&self.e.g, n + k, &eval(&self.e.g, &crate::core::Env::from(vals.clone()), &f.3));
                         for t in self.type_terms(&ext, &fty, &sel, fsort, Some(inside), true) {
                             if !facts.contains(&t) {
                                 facts.push(t);
@@ -2216,7 +2272,7 @@ impl<'a> Builder<'a> {
             }
             // Invariants may mention the type's value parameters
             // (`stop <= len src`).
-            let vals = Rc::new(vals);
+            let vals = crate::core::Env::from(vals);
             for inv in self.e.con_invs.get(&c).cloned().unwrap_or_default() {
                 let tm = quote(&self.e.g, n + fields.len(), &eval(&self.e.g, &vals, &inv.tm));
                 let saved = self.in_def;
@@ -2241,11 +2297,11 @@ impl<'a> Builder<'a> {
     }
 
     /// The type `ty`'s result at the arguments `args` (over `env`), when its
-    /// parameter types aren't computed from them (D176): its parameters,
+    /// parameter types aren't computed from them (#662): its parameters,
     /// types and values, put in by evaluation.
     fn result_type_at(&self, n: usize, ty: &Tm, args: &[(Tm, Mult)]) -> Option<Tm> {
-        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
-        let mut v = eval(&self.e.g, &Rc::new(Vec::new()), ty);
+        let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
+        let mut v = eval(&self.e.g, &crate::core::Env::new(), ty);
         for (a, _) in args {
             match force(&self.e.g, v) {
                 Val::Pi(_, _, _, _, c) => v = crate::core::apply_closure(&self.e.g, &c, eval(&self.e.g, &vars, a)),
@@ -2262,7 +2318,7 @@ impl<'a> Builder<'a> {
             return Vec::new();
         }
         let n = env.len();
-        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
         let v = force(&self.e.g, eval(&self.e.g, &vars, ty));
         let Val::Neutral(h, sp) = &v else { return Vec::new() };
         let Some(crate::core::Elim::Field(c, i)) = sp.last() else { return Vec::new() };
@@ -2468,6 +2524,26 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// An element of `a ++ b` is one of `a`'s or one of `b`'s, by where the
+    /// index falls: valid facts about `(seq.nth (seq.++ a b) i)`, so Z3 needn't
+    /// solve the word equation its sequence theory makes of that element,
+    /// whose cost depends on the order of its case splits (and so on how
+    /// symbols are spelled). Through nested `++` too.
+    fn index_concat(&mut self, s: &str, i: &str) {
+        let Some((a, b)) = self.concats.get(s).cloned() else { return };
+        if !self.fact_seen.insert(format!("concat-index {s} {i}")) {
+            return;
+        }
+        let la = format!("(seq.len {a})");
+        let lb = format!("(seq.len {b})");
+        let at = format!("(seq.nth {s} {i})");
+        let j = format!("(- {i} {la})");
+        self.asserts.push(format!("(=> (and (<= 0 {i}) (< {i} {la})) (= {at} (seq.nth {a} {i})))"));
+        self.asserts.push(format!("(=> (and (<= {la} {i}) (< {i} (+ {la} {lb}))) (= {at} (seq.nth {b} {j})))"));
+        self.index_concat(&a, i);
+        self.index_concat(&b, &j);
+    }
+
     fn nat_fact(&mut self, t: &str) {
         if !self.in_def && self.fact_seen.insert(t.to_string()) {
             self.asserts.push(format!("(>= {t} 0)"));
@@ -2510,7 +2586,7 @@ impl<'a> Builder<'a> {
                     ts.push(t);
                     ss.push(s);
                 }
-                // A last component that is a tuple: its components (D174).
+                // A last component that is a tuple: its components (#673).
                 if let Some(Sort::Tuple(ws)) = ss.last().filter(|_| ss.len() >= 2).cloned() {
                     if ws.len() >= 2 {
                         ss.pop();
@@ -2534,7 +2610,7 @@ impl<'a> Builder<'a> {
             Tm::Proj(x, i, rest) => {
                 let (xt, xs) = self.term(env, x)?;
                 match xs {
-                    // The rest of a longer tuple: a tuple of its components (D174).
+                    // The rest of a longer tuple: a tuple of its components (#673).
                     Sort::Tuple(ss) if *rest && ss.len() > i + 1 => {
                         let rs = ss[*i..].to_vec();
                         self.tuples.insert(rs.len());
@@ -2559,7 +2635,7 @@ impl<'a> Builder<'a> {
                     }
                 }
                 let (xt, xs) = self.term(env, x)?;
-                // A string is its bytes (D58, #170).
+                // A string is its bytes (#546, #170).
                 if xs == Sort::Str {
                     return Ok((xt, Sort::Seq(Box::new(Sort::Int))));
                 }
@@ -2705,7 +2781,7 @@ impl<'a> Builder<'a> {
         if args.len() < np + ci.len() {
             return out("a partially applied constructor");
         }
-        // A string is its bytes (D58, #170).
+        // A string is its bytes (#546, #170).
         if Some(id) == wk.string {
             let (t, s) = self.term(env, &args[np])?;
             self.expect(&s, &Sort::Seq(Box::new(Sort::Int)))?;
@@ -2888,7 +2964,7 @@ impl<'a> Builder<'a> {
         Ok(Some((ext, at)))
     }
 
-    /// `forall x y : …` (D137): proved (so Z3 refutes its negation with
+    /// `forall x y : …` (#632): proved (so Z3 refutes its negation with
     /// fresh values, without quantifier instantiation), and assumed only to
     /// check a counterexample (#77). Its variables range over their types:
     /// a `Nat` is non-negative and a refinement's predicates hold (#112).
@@ -2922,7 +2998,7 @@ impl<'a> Builder<'a> {
         Ok((name_binders(&all, &d), Sort::Bool))
     }
 
-    /// Apply the function value `ft` (of sort `s`) to `args` (D139).
+    /// Apply the function value `ft` (of sort `s`) to `args` (#630).
     fn select(&mut self, env: &[Ent], ft: &str, s: &Sort, args: &[(Tm, Mult)]) -> Tx<(String, Sort)> {
         let mut app = ft.to_string();
         let mut sort = s.clone();
@@ -2961,7 +3037,7 @@ impl<'a> Builder<'a> {
             ats.push((at, *p));
             sort = *r;
         }
-        // A local function of a refined type: its postconditions (D84).
+        // A local function of a refined type: its postconditions (#580).
         if !self.in_def && !matches!(sort, Sort::Fun(..)) && self.fun_tys.contains_key(ft) && self.post_seen.insert(app.clone()) {
             let ft = ft.to_string();
             self.fun_post_facts(args, &ats, &ft, &app, &sort);
@@ -2969,7 +3045,7 @@ impl<'a> Builder<'a> {
         Ok((app, sort))
     }
 
-    /// `arg` as a function value of sort `want` (D139): a parameter or field
+    /// `arg` as a function value of sort `want` (#630): a parameter or field
     /// already is one; a lambda becomes Z3's `lambda`, and anything else (a
     /// named function, a partial application, a local function) one that
     /// applies it.
@@ -3043,7 +3119,7 @@ impl<'a> Builder<'a> {
         format!("?{}", self.binder_marks)
     }
 
-    /// Is this binder's type a class's dictionary (D136)?
+    /// Is this binder's type a class's dictionary (#615)?
     fn is_dict_ty(&self, t: &Tm) -> bool {
         let h = t.head();
         match h {
@@ -3231,7 +3307,7 @@ impl<'a> Builder<'a> {
         self.term(&ienv, &app).map(Some)
     }
 
-    /// Should `d`'s definition be visible to the solver (D12)?
+    /// Should `d`'s definition be visible to the solver (#506)?
     fn reflected(&self, d: DefId) -> bool {
         let info = &self.e.g.defs[d.0 as usize];
         // `opaque` covers `partial` functions and builtins.
@@ -3243,7 +3319,7 @@ impl<'a> Builder<'a> {
 
     /// A constant whose value is `array.from_list` of a list literal, its
     /// elements closed terms the solver can see: declared, with its length
-    /// and each element asserted (D153). Equations on `seq.nth` are cheap for
+    /// and each element asserted (#638). Equations on `seq.nth` are cheap for
     /// Z3 where the value as a term (`seq.++` of 2,000 units) is not.
     fn array_table(&mut self, d: DefId, rs: &Sort) -> Tx<Option<(String, Sort)>> {
         let name = {
@@ -3359,7 +3435,7 @@ impl<'a> Builder<'a> {
 
     /// A constant whose value is large: not reflected as a definition (a
     /// 2,000-unit term in a recursive definition is slow for Z3) but given
-    /// as an equation in the full query (D153).
+    /// as an equation in the full query (#638).
     fn large_constant(&self, d: DefId) -> bool {
         let info = &self.e.g.defs[d.0 as usize];
         !matches!(info.ty, Tm::Pi(..)) && info.body.as_ref().is_some_and(|b| tm_size(b, LARGE_CONSTANT) >= LARGE_CONSTANT)
@@ -3413,16 +3489,21 @@ impl<'a> Builder<'a> {
         let mut post_env = Vec::new();
         let mut inner: Vec<Ent> = Vec::new();
         let dpos = if self.e.class_methods.contains(&d) { self.dict_pos(d) } else { None };
-        // The values of arguments that hold types (`ts~Types`, D176), for the
+        // The values of arguments that hold types (`ts~Types`, #662), for the
         // parameter types computed from them; unknowns for the others.
         let mut type_vals: Vec<Val> = Vec::new();
         let mut computed = false;
         let mut t = ty;
         let mut k = 0;
         while let Tm::Pi(_, _, _, a, b) = t.clone() {
-            let Some((arg, _)) = args.get(k) else { return out(format!("a partial application of `{}`", info.name)) };
+            let Some((arg, _)) = args.get(k) else {
+                return out(match self.e.hidden_home(&self.user, &qualified) {
+                    Some(home) => format!("a partial application of a private function of `{home}`"),
+                    None => format!("a partial application of `{}`", info.name),
+                });
+            };
             let a = if computed {
-                let v = crate::core::eval(&self.e.g, &Rc::new(type_vals.clone()), &a);
+                let v = crate::core::eval(&self.e.g, &crate::core::Env::from(type_vals.clone()), &a);
                 quote(&self.e.g, inner.len(), &self.e.reduce_type(&v))
             } else {
                 (*a).clone()
@@ -3439,7 +3520,7 @@ impl<'a> Builder<'a> {
                         return out("a type computed from a value the prover can't see");
                     }
                     let shown = crate::core::show(&self.e.g, &[], &z);
-                    *type_vals.last_mut().unwrap() = crate::core::eval(&self.e.g, &Rc::new(Vec::new()), &z);
+                    *type_vals.last_mut().unwrap() = crate::core::eval(&self.e.g, &crate::core::Env::new(), &z);
                     computed = true;
                     tys.push(Sort::Unin(format!("val#{shown}"), Vec::new()));
                     inner.push(Ent::Opaque(shown.clone()));
@@ -3474,8 +3555,8 @@ impl<'a> Builder<'a> {
                 let dict = self.is_dict_ty(&a);
                 if dict || matches!(self.zonk(inner.len(), &a), Tm::Pi(..)) {
                     // A known function argument picks a specialized instance;
-                    // any other is passed as a value (D139). So does a known
-                    // dictionary (D136).
+                    // any other is passed as a value (#630). So does a known
+                    // dictionary (#615).
                     // At an opaque dictionary (below), a function is passed
                     // as a value, so that equal functions are equal.
                     let opaque = !dict && dpos.and_then(|p| inner.get(p)).is_some_and(|e| matches!(e, Ent::Term(_, Sort::Unin(..))));
@@ -3547,7 +3628,7 @@ impl<'a> Builder<'a> {
             return out("a function returning a function");
         }
         if computed {
-            let v = crate::core::eval(&self.e.g, &Rc::new(type_vals.clone()), &t);
+            let v = crate::core::eval(&self.e.g, &crate::core::Env::from(type_vals.clone()), &t);
             t = quote(&self.e.g, inner.len(), &self.e.reduce_type(&v));
         }
         let rs = self.sort_of(&inner, &t)?;
@@ -3583,14 +3664,14 @@ impl<'a> Builder<'a> {
             _ => {}
         }
         // A constant array of literals (a table): its length and each
-        // element, as facts (D153).
+        // element, as facts (#638).
         if args.is_empty() {
             if let Some(r) = self.array_table(d, &rs)? {
                 return Ok(r);
             }
         }
         // A class's function of a known instance's dictionary is that
-        // instance's function (D136).
+        // instance's function (#615).
         if self.e.class_methods.contains(&d) {
             if let Some(r) = self.member_app(env, d, args, &inner)? {
                 let (app, _) = r;
@@ -3610,7 +3691,7 @@ impl<'a> Builder<'a> {
         }
         // At a dictionary Z3 can't see into (a class over a type
         // constructor, M25), a class's function is uninterpreted: one
-        // function per dictionary and type arguments (D136 i).
+        // function per dictionary and type arguments (#615 i).
         let opaque_dict = self.e.class_methods.contains(&d)
             && self.dict_pos(d).and_then(|p| inner.get(p)).is_some_and(|e| matches!(e, Ent::Term(_, Sort::Unin(..))));
         // Otherwise a class's function, and an instance's dictionary, are
@@ -3700,7 +3781,7 @@ impl<'a> Builder<'a> {
         Ok((app, rs))
     }
 
-    /// `bag.of` on lists of `elem` (D47, D138).
+    /// `bag.of` on lists of `elem` (#553, #625).
     fn ensure_bag_of(&mut self, elem: &Sort) -> Tx<String> {
         let es = elem.render(self.e);
         let name = if *elem == Sort::Int { "|bag.of|".to_string() } else { sym(&format!("bag.of<{es}>")) };
@@ -3760,10 +3841,13 @@ impl<'a> Builder<'a> {
             Prim::Eq => bin("=", &ts, Sort::Bool),
             Prim::Ne => Ok((format!("(not (= {} {}))", ts[0].0, ts[1].0), Sort::Bool)),
             Prim::Concat => match &ts[0].1 {
-                Sort::Str => bin("seq.++", &ts, Sort::Str),
-                s @ Sort::Seq(_) => {
+                s @ (Sort::Str | Sort::Seq(_)) => {
                     let s = s.clone();
-                    bin("seq.++", &ts, s)
+                    let t = format!("(seq.++ {} {})", ts[0].0, ts[1].0);
+                    if !self.in_def {
+                        self.concats.insert(t.clone(), (ts[0].0.clone(), ts[1].0.clone()));
+                    }
+                    Ok((t, s))
                 }
                 s if is_list(s) => {
                     let s = s.clone();
@@ -3795,9 +3879,10 @@ impl<'a> Builder<'a> {
                     _ => return Err(self.ill_sorted()),
                 };
                 let t = format!("(seq.nth {} {})", ts[0].0, ts[1].0);
-                // An element has its type's refinement (D133): a `U8` of
+                // An element has its type's refinement (#624): a `U8` of
                 // `Bytes` is `>= 0` and `< 256`.
                 if !self.in_def && self.fact_seen.insert(t.clone()) {
+                    self.index_concat(&ts[0].0, &ts[1].0);
                     if let Some(ety) = args.get(2) {
                         let facts = self.value_terms(env, ety, &t, &elem);
                         self.asserts.extend(facts);
@@ -3810,7 +3895,10 @@ impl<'a> Builder<'a> {
             }
             Prim::Par => Ok(ts[0].clone()),
             Prim::When => out("a `when`"),
-            Prim::Builtin(n) => out(format!("the builtin `{n}`")),
+            Prim::Builtin(n) => out(match self.e.hidden_home(&self.user, n) {
+                Some(home) => format!("a private function built into `{home}`"),
+                None => format!("the builtin `{n}`"),
+            }),
             Prim::Forall => out("a `forall`"),
             Prim::Effect(_) => out("a call with effects"),
         }
@@ -4106,7 +4194,7 @@ impl<'a> Builder<'a> {
         // One normal form, so the same function written in two places (say, a
         // lambda in a body and in a lemma, one with its pattern `let`s still
         // there) is one key.
-        let arg = if matches!(arg, Tm::Def(_)) { arg } else { quote(&self.e.g, 0, &eval(&self.e.g, &Rc::new(Vec::new()), &arg)) };
+        let arg = if matches!(arg, Tm::Def(_)) { arg } else { quote(&self.e.g, 0, &eval(&self.e.g, &crate::core::Env::new(), &arg)) };
         let h = arg.head();
         let key = match h {
             Tm::Def(d) if matches!(arg, Tm::Def(_)) => {
@@ -4301,7 +4389,7 @@ impl<'a> Builder<'a> {
         self.expect(&bs, &r)?;
         // A definition recursing by `decreasing` ends only where its
         // precondition holds and its `Nat`s are `Nat`s: Z3 gets the equation
-        // there, and an unknown value elsewhere (M17, D118).
+        // there, and an unknown value elsewhere (M17).
         if let Some(guard) = guard? {
             let out_name = format!("|{}#outside|", name.trim_matches('|'));
             self.funs.insert(
@@ -4330,7 +4418,7 @@ impl<'a> Builder<'a> {
     /// definitions (structural recursion ends on every value Z3 can build).
     fn domain(&mut self, inst: &Inst, env: &[Ent]) -> Tx<Option<String>> {
         let Some(spec) = self.e.specs.get(&inst.def).cloned() else { return Ok(None) };
-        // A measure written, or guessed (D150).
+        // A measure written, or guessed (#641).
         if spec.measure.is_none() && !self.e.guessed.contains(&inst.def) {
             return Ok(None);
         }
@@ -4352,7 +4440,7 @@ impl<'a> Builder<'a> {
         // Preconditions, elaborated with the result in scope after the parameters.
         let mut penv = env.to_vec();
         penv.push(Ent::Opaque("the result".into()));
-        // A `forall` (D137) is proved at each call; termination doesn't rest on it.
+        // A `forall` (#632) is proved at each call; termination doesn't rest on it.
         for pred in spec.preds.iter().filter(|p| !p.is_post && !everywhere && !has_forall(&p.tm)) {
             conds.push(self.prop(&penv, &pred.tm)?);
         }
@@ -4503,7 +4591,7 @@ impl<'a> Builder<'a> {
                 // The postcondition holds where the precondition does.
                 let mut pres = Vec::new();
                 let mut ok = true;
-                // A `forall` precondition is proved at the call (D137), and
+                // A `forall` precondition is proved at the call (#632), and
                 // Z3 can't use it in a guard without instantiating it.
                 for pred in spec.preds.iter().filter(|x| !x.is_post && !has_forall(&x.tm)) {
                     match self.prop(&p.env, &pred.tm) {
@@ -4541,7 +4629,7 @@ impl<'a> Builder<'a> {
         let lvl = ob.ctx.len();
         let goal_tm = quote(&self.e.g, lvl, &ob.goal);
         let mut facts = Vec::new();
-        // Proving a `forall` (D137): its body, at fresh values; a `forall`
+        // Proving a `forall` (#632): its body, at fresh values; a `forall`
         // in scope over the same types is given at those values (how a
         // function passes its own hypothesis on).
         let (goal, gs) = match &goal_tm {
@@ -4596,7 +4684,7 @@ impl<'a> Builder<'a> {
         let mut foralls = false;
         for (k, f) in ob.facts.iter().enumerate() {
             let tm = quote(&self.e.g, lvl, f);
-            // A `forall` is used only by name, with `have` (D137), except
+            // A `forall` is used only by name, with `have` (#632), except
             // to check a counterexample.
             if has_forall(&tm) && !self.foralls {
                 foralls = true;
@@ -4716,7 +4804,7 @@ impl<'a> Builder<'a> {
         let premised = focus.mentioned_in(&facts.join("\n")).map(with_defs);
         // Tables' elements go only in the full query: the weaker ones first
         // try without them, and most proofs about a table need only its
-        // length (D153).
+        // length (#638).
         let (text, no_tables, without_axioms, without_bodies) = match text.rfind("(assert (not ") {
             Some(k) if !self.table_facts.is_empty() => {
                 let full = format!("{}{}{}", &text[..k], self.table_facts.concat(), &text[k..]);
@@ -4858,7 +4946,7 @@ fn array_literal(e: &Elab, t: &Tm) -> Option<Vec<Tm>> {
     }
 }
 
-/// How many term nodes make a constant large (D151 g).
+/// How many term nodes make a constant large (#640 g).
 const LARGE_CONSTANT: usize = 1000;
 
 /// The number of nodes in `t`, counted up to `cap`.

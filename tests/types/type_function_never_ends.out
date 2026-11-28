@@ -1,0 +1,9 @@
+error[E0301]: cannot show that `grow` terminates: no measure found that every recursive call makes smaller
+ --> type_function_never_ends.ck:4:5
+  |
+4 |     grow (n + 1)
+  |     ^^^^^^^^^^^^ recursive call
+  = note: measures tried, none shown smaller here: `n`
+  = help: add `decreasing <measure>` as the first line of the function, or mark it `partial`
+
+type_function_never_ends.ck: 1 error, 0 warnings
