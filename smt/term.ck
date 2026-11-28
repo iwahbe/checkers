@@ -1894,6 +1894,7 @@ export lemma fits_all_def sig first np ws ss : sig~Sig, first~Nat, np~Nat, ws~Li
             (w :: wr, s :: sr) -> fits sig first np w s and fits_all sig first np wr sr
             _                  -> False
 
+# (`datatype_ok`'s body, with its `if` and `let` unfolded.)
 export lemma datatype_ok_def sig e : sig~Sig, e~Nat
     ensures datatype_ok sig e
         == (e < len sig.datatypes and e < len sig.values
@@ -1908,14 +1909,6 @@ export lemma nth_map f xs k a : f~(b -> c), xs~List b, k~Nat, a~b, list.head (li
         match xs
             []        -> auto
             _ :: rest -> if k == 0 then auto else have nth_map f rest (k - 1) a
-
-# Below its length, a list has a `k`-th element.
-export lemma nth_in xs k : xs~List b, k~Nat, k < list.length xs
-    ensures list.head (list.drop k xs) != None
-    proof
-        match xs
-            []        -> auto
-            _ :: rest -> if k == 0 then auto else have nth_in rest (k - 1)
 
 # Dropping `i` from a list whose `i`-th element is `a` leaves `a`, then
 # the rest.
@@ -1935,7 +1928,6 @@ export lemma instantiate_params args count i : args~List Sort, count~Nat, i~Nat,
         if count == 0
             auto
         else
-            have nth_in args i
             match list.head (list.drop i args)
                 Some a ->
                     have drop_nth args i a
@@ -1952,22 +1944,9 @@ export lemma instantiate_twice sig targs args s : sig~Sig, targs~List Sort, args
             Arr i v   ->
                 have instantiate_twice sig targs args i
                 have instantiate_twice sig targs args v
-            Data d ss ->
-                have instantiate targs s == Data d (list.map (instantiate targs) ss)
-                have instantiate args (Data d (list.map (instantiate targs) ss))
-                    == Data d (list.map (instantiate args) (list.map (instantiate targs) ss))
-                have instantiate (list.map (instantiate args) targs) s
-                    == Data d (list.map (instantiate (list.map (instantiate args) targs)) ss)
-                have instantiate_twice_all sig targs args ss
-            Unin u ss ->
-                have instantiate targs s == Unin u (list.map (instantiate targs) ss)
-                have instantiate args (Unin u (list.map (instantiate targs) ss))
-                    == Unin u (list.map (instantiate args) (list.map (instantiate targs) ss))
-                have instantiate (list.map (instantiate args) targs) s
-                    == Unin u (list.map (instantiate (list.map (instantiate args) targs)) ss)
-                have instantiate_twice_all sig targs args ss
+            Data _ ss -> have instantiate_twice_all sig targs args ss
+            Unin _ ss -> have instantiate_twice_all sig targs args ss
             Param k   ->
-                have nth_in targs k
                 match list.head (list.drop k targs)
                     Some a -> have nth_map (instantiate args) targs k a
             _         -> auto
@@ -1980,14 +1959,8 @@ export lemma instantiate_twice_all sig targs args ss : sig~Sig, targs~List Sort,
         match ss
             []        -> auto
             s :: rest ->
-                let f = instantiate args
-                let g = instantiate targs
-                let h = instantiate (list.map (instantiate args) targs)
                 have instantiate_twice sig targs args s
                 have instantiate_twice_all sig targs args rest
-                have list.map g ss == g s :: list.map g rest
-                have list.map f (list.map g ss) == f (g s) :: list.map f (list.map g rest)
-                have list.map h ss == h s :: list.map h rest
 
 # A constructor of a list that `ctors_ok` accepts has fields of sorts
 # with parameters below `np`.
@@ -3250,8 +3223,8 @@ export lemma instantiate_ok sig np args s : sig~Sig, np~Nat, args~List Sort, s~S
             Param k   -> have sorts_ok_nth sig 0 args k
             _         -> auto
 
-lemma instantiates_ok sig np args ss : sig~Sig, np~Nat, args~List Sort, ss~List Sort, sorts_ok sig np ss,
-                                       list.length args == np, sorts_ok sig 0 args
+export lemma instantiates_ok sig np args ss : sig~Sig, np~Nat, args~List Sort, ss~List Sort, sorts_ok sig np ss,
+                                              list.length args == np, sorts_ok sig 0 args
     ensures sorts_ok sig 0 (list.map (instantiate args) ss)
     proof
         match ss
