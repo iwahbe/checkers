@@ -9,9 +9,9 @@ module cert_checks
 
 import std.list
 import smtlib (Query)
-import term (Term, Context, Var, App, Prim, Num, Boolean, Fun, Eq)
+import term (Sort, Term, Context, Var, App, Prim, Num, Boolean, Fun, Eq)
 import cert (Refutation, Lit, Fact, NotGoal, Structure, Resolve)
-import model (Model, Truth, Countable)
+import model (Model, Value, Truth, ArrayElem, Countable)
 import solve (Limits, Proved, GaveUp, Incomplete)
 
 fn query src -> q : src~Bytes, q~Option Query
@@ -83,8 +83,10 @@ check cert.terms (context AND) (goal AND) (Refutation GOOD) == [Q, PQ, Q, PQ, Q]
 
 # The premises of `checks_sound` can be met for an accepted refutation: in
 # the model with `p` and `q` true, the facts hold and every term used has a
-# value of its sort. (The context has no axioms, definitions or arrays, so
-# the other premises ask nothing.)
+# value of its sort. (The context has no axioms or definitions, so `axioms`
+# and `definitions` ask nothing; the terms used are closed `Bool` terms,
+# whose values are truth values, so no array element is among them and
+# `arrays` asks nothing either.)
 fn everything_true -> m : m~Model
     let funs = \_ _ -> Some (Truth True)
     model.without_arrays funs (\_ -> None) (\_ -> None) (\_ _ _ -> None) (\_ _ _ _ _ -> None) (\_ _ -> Countable) 10
@@ -97,3 +99,22 @@ check term.axioms (context AND) == [] and term.defs (context AND) == []
 check model.holds (context AND) BOTH (goal AND)
 # A goal that isn't a closed `Bool` term is never refuted.
 check not (cert.checks (context AND) (App (Num 1) []) (Refutation GOOD))
+
+# `checks_sound`'s `arrays` premise as it was before `lambda`'s law left
+# it (every law, at values among the terms used, with an environment
+# `env`) gives it as it is, at every point: the theorem is no weaker for
+# the change.
+lemma old_arrays_give_arrays c goal refutation m s a b i j x : c~Context, goal~Term, refutation~Refutation, m~Model, s~Sort,
+                                                               a~Nat, b~Nat, i~Value, j~Value, x~Value,
+                                                               old: (forall t p q i2 j2 x2 env senv xs body : t~Sort, p~Nat, q~Nat,
+                                                                     i2~Value, j2~Value, x2~Value, env~List Value,
+                                                                     senv~List Sort, xs~Sort, body~Term,
+                                                                     cert.values_among c m (cert.terms c goal refutation)
+                                                                     (ArrayElem p :: ArrayElem q :: i2 :: j2 :: x2 :: env),
+                                                                     model.arrays_ok_at c m t p q i2 j2 x2 env senv xs body
+                                                                     and model.arrays_total_at c m t p q i2 j2 x2 env senv xs body),
+                                                               cert.values_among c m (cert.terms c goal refutation) [ArrayElem a, ArrayElem b, i, j, x]
+    ensures model.arrays_ok_but_lambda c m s a b i j x and model.arrays_total_but_lambda c m s a b i j x
+    proof
+        have old s a b i j x [] [] s (Var 0)
+        have model.arrays_split c m s a b i j x [] [] s (Var 0)

@@ -103,9 +103,9 @@
 #
 # - `checks_sound`, in two statements. The first asks the premises (the
 #   facts; the axioms and definitions' equations, `holds_at`; `arrays_ok`
-#   with `arrays_total`; every function of the model total) only at the
-#   values of the finite set of terms the certificate uses: every
-#   satisfiable context has such a model, so it is never vacuous. The
+#   with `arrays_total` but `lambda`'s; every function of the model total)
+#   only at the values of the finite set of terms the certificate uses:
+#   every satisfiable context has such a model, so it is never vacuous. The
 #   second, a corollary in one step, asks them at all values. Either way the
 #   conclusion is that the goal `holds`.
 # - Monotonicity: a definite answer in a model is the answer in every model
@@ -1723,6 +1723,25 @@ export fn arrays_total_at c m s a b i j x env senv xs body -> r : c~Context, m~M
                                                                   xs~Sort, body~Term, r~Bool
     gives_select c m s a i and gives_const c m s x and gives_store c m s a j x and gives_sum c m s a b
         and gives_lambda c m s env senv xs body
+
+# The laws at one point, but `lambda`'s.
+export fn arrays_ok_but_lambda c m s a b i j x -> r : c~Context, m~Model, s~Sort, a~Nat, b~Nat, i~Value, j~Value,
+                                                      x~Value, r~Bool
+    const_law c m s x i and store_law c m s a j x i and sum_law c m s a b i and ext_law c m s a b
+
+# What the model answers at one point, but `lambda`s.
+export fn arrays_total_but_lambda c m s a b i j x -> r : c~Context, m~Model, s~Sort, a~Nat, b~Nat, i~Value, j~Value,
+                                                         x~Value, r~Bool
+    gives_select c m s a i and gives_const c m s x and gives_store c m s a j x and gives_sum c m s a b
+
+# The laws and answers at one point are those but `lambda`'s, and
+# `lambda`'s.
+export lemma arrays_split c m s a b i j x env senv xs body : c~Context, m~Model, s~Sort, a~Nat, b~Nat, i~Value, j~Value,
+                                                             x~Value, env~List Value, senv~List Sort, xs~Sort, body~Term
+    ensures arrays_ok_at c m s a b i j x env senv xs body
+            == (arrays_ok_but_lambda c m s a b i j x and lambda_law c m s env senv xs body i)
+        and arrays_total_at c m s a b i j x env senv xs body
+            == (arrays_total_but_lambda c m s a b i j x and gives_lambda c m s env senv xs body)
 
 # Whether `k` is an array, `i` an index and `x` a value of array sort `s`
 # of `c`.
