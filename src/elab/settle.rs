@@ -189,6 +189,26 @@ impl Elab {
         true
     }
 
+    /// Is type function `d` (a function whose result is a type) proved, its
+    /// termination too, so that a type it computes is computed to completion
+    /// (§8.9)? Then it unfolds without fuel (`DefInfo::free`); until then it
+    /// may never end (#711), so it takes fuel. Asked when its body is
+    /// checked and again at its module's end: a failure that only means
+    /// "not yet" (something it waits for is checked later) is forgotten,
+    /// so it doesn't keep a value that needs it from being known later.
+    pub fn settle_type_fn(&mut self, d: DefId) {
+        let info = &self.g.defs[d.0 as usize];
+        if info.free || info.opaque || info.body.is_none() || !crate::core::is_type_former(&info.ty) {
+            return;
+        }
+        let unsettled = self.early.borrow().unsettled.clone();
+        if self.settle(d) {
+            self.g.defs[d.0 as usize].free = true;
+        } else {
+            self.early.borrow_mut().unsettled = unsettled;
+        }
+    }
+
     /// Does constant or function `d` use itself?
     fn calls_itself(&self, d: DefId) -> bool {
         let mut used = Vec::new();

@@ -2762,6 +2762,7 @@ impl Elab {
             let info = &mut self.g.defs[d.0 as usize];
             info.ty = ty;
             info.body = Some(body);
+            info.free = true;
             self.transparent.insert(d);
             self.assoc_defs.insert((c.tid, t.clone()), d);
         }
