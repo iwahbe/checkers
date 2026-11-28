@@ -1868,14 +1868,16 @@ fn returned(e: &Elab, o: &Obligation) -> Option<String> {
 /// which Z3 searches slowly: a model of that, unless with its values fixed
 /// it breaks them (as where Z3 gives up on the full query, §7.2). Then the
 /// quantified query, free. The first model is the counterexample; without
-/// one, where a `forall` was left out, the note saying why none is shown.
+/// one, the note saying why none is shown.
 fn check_model(e: &Elab, user: &str, o: &Obligation, asked: &smt::Query, defs: &smt::Defs, model: &str) -> (Option<String>, Option<String>) {
     let why = |broken: bool| {
-        asked.foralls.then(|| {
+        Some(if asked.foralls {
             format!(
                 "no counterexample: the one Z3 found {} a `forall` in scope, which the prover uses only by name, with `have`",
                 if broken { "breaks" } else { "could not be checked against" }
             )
+        } else {
+            "no counterexample: the one Z3 found holds array elements that are not values of their type, and it found none that are".to_string()
         })
     };
     let builder = || {
