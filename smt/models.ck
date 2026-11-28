@@ -26,8 +26,9 @@
 # given. (`ckc` gives Z3 a definition only in a form whose recursion ends on
 # every input, so the corpus scripts and golden tests pass it.) Without it a
 # call of a definition is not determined. The summary says how many of the
-# queries that hold have definitions, and how many a `lambda`, which
-# `model.refutes` refuses.
+# queries that hold have definitions, how many a `lambda`, and how many a
+# definition storing at an index sort the normal forms can't store at,
+# which `model.refutes` refuses.
 #
 # Each query is counted once, in the first of these that applies:
 #
@@ -84,26 +85,26 @@ let FUEL = answer.FUEL
 enum Outcome
     NoValues
     # Z3 answered `unsat` or `unknown` (`v`): there is no model to check.
-    Answered v            : v~Bytes
+    Answered v               : v~Bytes
     # A file that is neither a query nor an answer, in a directory given.
-    Stray what            : what~Bytes
+    Stray what               : what~Bytes
     # The query introduces a name with `!`, as Z3's own names are: its
     # answer is not read.
     BangUnread
-    QueryUnread why       : why~Bytes
-    AnswerUnread why      : why~Bytes
+    QueryUnread why          : why~Bytes
+    AnswerUnread why         : why~Bytes
     Unpatterned
     Patterned
-    Fails what            : what~Bytes
-    Holds defs lambda     : defs~Bool, lambda~Bool
-    Undetermined kind why : kind~Bytes, why~Bytes
+    Fails what               : what~Bytes
+    Holds defs lambda stores : defs~Bool, lambda~Bool, stores~Bool
+    Undetermined kind why    : kind~Bytes, why~Bytes
     # `--z3`: Z3 run now doesn't answer `sat` (it answered `v`).
-    NowAnswers v          : v~Bytes
+    NowAnswers v             : v~Bytes
     # `--z3`: the program can't be run (`why`).
-    NotRun why            : why~Bytes
+    NotRun why               : why~Bytes
     # `--z3`: Z3's `(get-model)` output doesn't read, or holds a form this
     # reader doesn't know.
-    ModelUnread why       : why~Bytes
+    ModelUnread why          : why~Bytes
     # `refutes` disagrees with the assertions checked one by one: a bug in
     # this command or in `smt.model`.
     Disagrees
@@ -262,13 +263,14 @@ fn check_with terminating q make printed_own why -> o : terminating~Bool, q~Quer
                                 Some u ->
                                     let (kind, detail) = why c u
                                     Undetermined kind detail
-                                None   -> Holds (term.defs c != []) lambda
+                                None   -> Holds (term.defs c != []) lambda (not (model.defs_store_normal c m))
                         # `refutes` takes a model where every assertion holds, unless
-                        # there is a `lambda` or an unmarked definition.
+                        # there is a `lambda`, an unmarked definition, or a definition's
+                        # store the normal forms have no store for.
                         let refutable =
                             match verdict
-                                Holds _ False -> model.defs_run c
-                                _             -> False
+                                Holds _ False False -> model.defs_run c
+                                _                   -> False
                         if refutable != model.refutes c q.goal m then Disagrees else verdict
 
 # The first of the printed values of the query's own constants and named
@@ -505,18 +507,23 @@ fn is_fails o -> r : o~Outcome, r~Bool
 
 fn is_holds o -> r : o~Outcome, r~Bool
     match o
-        Holds _ _ -> True
-        _         -> False
+        Holds _ _ _ -> True
+        _           -> False
 
 fn is_holds_defs o -> r : o~Outcome, r~Bool
     match o
-        Holds True _ -> True
-        _            -> False
+        Holds True _ _ -> True
+        _              -> False
 
 fn is_holds_lambda o -> r : o~Outcome, r~Bool
     match o
-        Holds _ True -> True
-        _            -> False
+        Holds _ True _ -> True
+        _              -> False
+
+fn is_holds_stores o -> r : o~Outcome, r~Bool
+    match o
+        Holds _ _ True -> True
+        _              -> False
 
 fn is_open o -> r : o~Outcome, r~Bool
     match o
@@ -555,6 +562,8 @@ export fn report terminating xs -> r : terminating~Bool, xs~List (Bytes, Outcome
         ++ line (n is_holds) b"where every assertion holds"
         ++ b"      (" ++ smtlib.numeral (n is_holds_defs) ++ b" of them with definitions, " ++ defs_how terminating ++ b")\n"
         ++ b"      (" ++ smtlib.numeral (n is_holds_lambda) ++ b" of them with a `lambda`, which `refutes` refuses)\n"
+        ++ b"      (" ++ smtlib.numeral (n is_holds_stores)
+        ++ b" of them with a definition storing at an index sort the normal forms can't store at, which `refutes` refuses)\n"
         ++ line (n is_open) b"not determined by what Z3 printed, by the first reason:"
         ++ reason_lines (reasons xs [])
         ++ line (n is_disagrees) b"where `refutes` disagrees (listed above)"
@@ -668,6 +677,8 @@ fn refutes_text c goal m -> r : c~Context, goal~term.Term, m~model.Model, r~Byte
         b"no (a `lambda`)"
     else if not (model.defs_run c)
         b"no (recursive definitions not taken as terminating)"
+    else if not (model.defs_store_normal c m)
+        b"no (a definition stores at an index sort the normal forms can't store at)"
     else
         b"no"
 

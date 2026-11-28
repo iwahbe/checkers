@@ -1674,6 +1674,8 @@ export fn without_lambda c goal -> r : c~Context, goal~Term, r~Bool
 #   which only the caller sets: `models --terminating` does, on its user's
 #   word); a `define-fun` needs no mark (`unfolds`);
 # - no fact, definition or the goal has a `lambda` in it;
+# - no definition stores into an array whose index sort the normal forms
+#   can't store at (`defs_store_normal`);
 # - each fact holds and the goal fails, in `normal_arrays m`, with each
 #   definition run as its own body.
 #
@@ -1684,11 +1686,63 @@ export fn without_lambda c goal -> r : c~Context, goal~Term, r~Bool
 # `normal_arrays`' normal forms, meant to be the same element exactly when
 # they are the same function, so that it satisfies `arrays_ok` (owed by
 # S6; `check`ed at points in `model_checks`). A `lambda` is refused because
-# `normal_arrays` does not name one's array.
+# `normal_arrays` does not name one's array. A definition's store at an
+# `Opaque` index sort is refused because the normal forms have no store
+# there: the definition would have no value at some arguments however much
+# fuel it had, and the theorem's hypothesis, that every call finishes with
+# some fuel, could not hold. (A store there in a fact or the goal needs no
+# refusal: it has no value, so `refutes` is false.)
 export fn refutes c goal m -> r : c~Context, goal~Term, m~Model, r~Bool
     let n = normal_arrays (term.signature c) m
-    term.fact_ok c goal and term.axioms c == [] and defs_run c and without_lambda c goal
+    term.fact_ok c goal and term.axioms c == [] and defs_run c and without_lambda c goal and defs_store_normal c m
         and facts_hold_unfolding c n (term.facts c) and eval_unfolding c n goal == Ok (Truth False)
+
+# Whether no definition of `c` stores into an array whose index sort the
+# normal forms can't store at: `Opaque` for `m`'s domains (a datatype, an
+# uninterpreted sort with an `Unsized` domain or one listing `LISTED` or
+# more elements, …). The store is looked for in the body, at the sort of
+# the array stored into, whether or not a call reaches it.
+export fn defs_store_normal c m -> r : c~Context, m~Model, r~Bool
+    defs_stores_normal (term.signature c) m.domain (term.defs c)
+
+fn defs_stores_normal sig dom ds -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), ds~List (Nat, Def), r~Bool
+    match ds
+        []             -> True
+        (_, d) :: rest ->
+            stores_normal sig dom (term.binder_env d.params) d.body and defs_stores_normal sig dom rest
+
+# Whether no store in `t`, whose variables have the sorts `senv`, is into
+# an array whose index sort is `Opaque` for `dom`.
+fn stores_normal sig dom senv t -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), senv~List Sort, t~Term, r~Bool
+    match t
+        Var _          -> True
+        App h args     -> store_normal sig dom senv h args and all_stores_normal sig dom senv args
+        Let binds body ->
+            binds_stores_normal sig dom senv binds
+                and match term.sorts_of sig senv (term.bind_terms binds)
+                    Ok ss -> stores_normal sig dom (list.reverse ss ++ senv) body
+                    Err _ -> True
+        Lam _ x body   -> stores_normal sig dom (x :: senv) body
+
+fn store_normal sig dom senv h args -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), senv~List Sort, h~Head,
+                                           args~List Term, r~Bool
+    match (h, args)
+        (Prim Store, a :: _) ->
+            match term.sort_of sig senv a
+                Ok (Arr ix _) -> index_kind sig dom ix != Opaque
+                _             -> True
+        _                    -> True
+
+fn all_stores_normal sig dom senv ts -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), senv~List Sort, ts~List Term, r~Bool
+    match ts
+        []        -> True
+        t :: rest -> stores_normal sig dom senv t and all_stores_normal sig dom senv rest
+
+fn binds_stores_normal sig dom senv bs -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), senv~List Sort,
+                                              bs~List (Name, Term), r~Bool
+    match bs
+        []             -> True
+        (_, t) :: rest -> stores_normal sig dom senv t and binds_stores_normal sig dom senv rest
 
 fn facts_hold_unfolding c m ts -> r : c~Context, m~Model, ts~List Term, r~Bool
     match ts

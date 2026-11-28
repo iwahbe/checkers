@@ -11,7 +11,7 @@ module model_checks
 import std.list
 import smtlib (Query)
 import term (Sort, Int, Bool, Arr, Unin, Context, Term, Var, App, Prim, Num, Boolean, And, Axiom, Def, Recursive, ConstArr, Select)
-import model (Value, Truth, Integer, Sequence, Constructed, Element, ArrayElem, Model, Domain, UpTo, Countable, Form)
+import model (Value, Truth, Integer, Sequence, Constructed, Element, ArrayElem, Model, Domain, UpTo, Countable, Unsized, Form)
 import model (Unknown, NotGiven, LambdaNotGiven, OutOfFuel, NotTerminating, WrongSort, IllSorted)
 import models
 import answer
@@ -485,6 +485,24 @@ check not (refuted_marked LAM_GOAL)
 check not (refuted_marked LAM_FACT)
 check not (refuted_marked LAM_DEF)
 check refuted_marked NO_LAM
+
+# ── `refutes` with a definition's store ─────────────────────────────────────
+
+# A definition storing into an array indexed by an uninterpreted sort, never
+# called: refused where that sort's domain is `Unsized` (the normal forms
+# have no store there), taken where it is `Countable`. One storing at a
+# `Bool` index, a listed sort, is taken.
+let STORE_U = b"(set-logic ALL)(declare-sort U 0)(define-fun put ((a (Array U Int)) (u U)) (Array U Int) (store a u 1))(assert (not false))(check-sat)"
+let STORE_BOOL = b"(set-logic ALL)(define-fun put ((a (Array Bool Int))) (Array Bool Int) (store a true 1))(assert (not false))(check-sat)"
+
+let UNSIZED = model_with (\_ _ -> None) NO_ARRAYS (\_ _ -> Unsized) 10
+
+check not (model.defs_store_normal (context STORE_U) UNSIZED)
+check not (model.refutes (context STORE_U) (goal STORE_U) UNSIZED)
+check model.defs_store_normal (context STORE_U) NOTHING
+check model.refutes (context STORE_U) (goal STORE_U) NOTHING
+check model.defs_store_normal (context STORE_BOOL) UNSIZED
+check model.refutes (context STORE_BOOL) (goal STORE_BOOL) UNSIZED
 
 # Constant arrays over an uninterpreted index: named by their constants,
 # as at every index sort, so different constants are different arrays (no
