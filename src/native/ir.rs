@@ -75,6 +75,28 @@ pub enum Op {
 }
 
 impl Op {
+    /// Every operation, as code written with names reads them back.
+    pub const ALL: [Op; 18] = [
+        Op::Add,
+        Op::Sub,
+        Op::Mul,
+        Op::Div,
+        Op::Rem,
+        Op::Neg,
+        Op::Eq,
+        Op::Ne,
+        Op::Lt,
+        Op::Le,
+        Op::Gt,
+        Op::Ge,
+        Op::Concat,
+        Op::Len,
+        Op::Index,
+        Op::Par,
+        Op::When,
+        Op::TypeApply,
+    ];
+
     pub fn of(p: &Prim) -> Option<Op> {
         Some(match p {
             Prim::Add => Op::Add,
@@ -98,6 +120,12 @@ impl Op {
         })
     }
 }
+
+/// The messages of `Ir::Fail`: code written with names reads one back as
+/// one of these.
+pub const FAIL_PRIMITIVE: &str = "an unexpected primitive";
+pub const FAIL_MATCH: &str = "no arm of a `match` matches this value";
+pub const FAILS: [&str; 2] = [FAIL_PRIMITIVE, FAIL_MATCH];
 
 pub struct IrCase {
     pub branches: Vec<(ConId, usize, Arc<Ir>)>,
@@ -381,7 +409,7 @@ impl<'g> Compiler<'g> {
                 let n = if matches!(p, Prim::Sub | Prim::Index) { 2 } else { args.len() };
                 match Op::of(p) {
                     Some(op) => Ir::Prim(op, args.iter().take(n).map(|a| self.compile(a)).collect(), nat),
-                    None => Ir::Fail("an unexpected primitive"),
+                    None => Ir::Fail(FAIL_PRIMITIVE),
                 }
             }
             Tm::Case(s, c) => match c.branches.first() {
@@ -400,7 +428,7 @@ impl<'g> Compiler<'g> {
                 }
                 _ => Ir::Case(self.compile(s), Arc::new(self.case(c))),
             },
-            Tm::Error => Ir::Fail("no arm of a `match` matches this value"),
+            Tm::Error => Ir::Fail(FAIL_MATCH),
         }
     }
 
