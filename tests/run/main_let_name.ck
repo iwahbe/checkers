@@ -1,7 +1,7 @@
 module main_let_name
 
 # `let main` names a function: neither is unused, and `main` keeps its name
-# (D181).
+# (#668).
 
 import std.system (System, ExitCode)
 import std.terminal

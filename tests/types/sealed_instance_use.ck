@@ -1,6 +1,6 @@
 module sealed_instance_use
 
-# Sealing (D54): an exported function stays sealed when an instance's
+# Sealing (#537): an exported function stays sealed when an instance's
 # function, whose body every importer sees, calls it.
 
 import sealed_instance_lib (Meters, sign)

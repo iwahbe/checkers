@@ -1,4 +1,4 @@
-# Completion in doc comments (D148 f): after `[`, a link's names: [tw‸
+# Completion in doc comments (#642 f): after `[`, a link's names: [tw‸
 #
 # ```
 # #! import std.list

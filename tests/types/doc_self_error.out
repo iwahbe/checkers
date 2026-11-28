@@ -1,0 +1,9 @@
+error[E0260]: this `check` is false
+ --> doc_self_error.ck:9:7
+  |
+9 | check ONE == 2
+  |       ^^^^^^^^ evaluates to `False`
+  = note: left side:  `1`
+  = note: right side: `2`
+
+doc_self_error.ck: 1 error, 0 warnings

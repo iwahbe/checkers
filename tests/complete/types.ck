@@ -1,6 +1,6 @@
 module types
 
-# Types and conditions in signatures (D142).
+# Types and conditions in signatures (#626).
 
 record Point
     x~Int

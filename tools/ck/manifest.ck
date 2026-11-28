@@ -1,5 +1,5 @@
 # manifest.ck — reading `checkers.json` and `checkers.lock` (SPEC §16.4,
-# D107, D111). A problem is reported at its line and column.
+# #597, #608). A problem is reported at its line and column.
 
 module ck.manifest
 
@@ -215,7 +215,7 @@ export fn valid_name s -> r : s~String, r~Bool
 # A package's name: lower-case letters, digits and `_`, starting with a letter.
 export type PackageName = s~String, valid_name s
 
-# The standard library's package, `std` (D104), is a `PackageName`.
+# The standard library's package, `std` (#603), is a `PackageName`.
 export lemma std_is_a_name
     ensures valid_name "std"
 

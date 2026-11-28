@@ -1,4 +1,4 @@
-# The runtime can't prove a precondition of `fn main` (E0366, D181).
+# The runtime can't prove a precondition of `fn main` (E0366, #668).
 module main_pre
 
 import std.system (System, ExitCode)

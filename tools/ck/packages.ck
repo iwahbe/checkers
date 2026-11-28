@@ -1,4 +1,4 @@
-# packages.ck — a package's dependencies (SPEC §16.4, D108, D111): path
+# packages.ck — a package's dependencies (SPEC §16.4, #598, #608): path
 # dependencies, git dependencies fetched into the cache, minimal version
 # selection, `checkers.lock`, and the `--package`/`--uses` flags for `ckc`.
 
@@ -473,6 +473,6 @@ fn uses_flag name uses -> r : name~String, uses~List PackageName, r~List String
         [] -> []
         _  -> ["--uses", name ++ "=" ++ list.join "," uses]
 
-# The flags that tell `ckc` about the build's packages (D111).
+# The flags that tell `ckc` about the build's packages (#608).
 export partial fn flags b -> r : b~Build, r~List String
     package_flags b.packages ++ uses_flag "." (list.map dep_name b.root.deps)

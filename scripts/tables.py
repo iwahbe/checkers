@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generates the standard library's Unicode and HTML tables (D151 d).
+"""Generates the standard library's Unicode and HTML tables (#640 d).
 
     python3 scripts/tables.py
 

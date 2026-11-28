@@ -1,6 +1,6 @@
 module computed_elem
 
-# A type argument computed from a local variable (D178): its layout isn't
+# A type argument computed from a local variable (#665): its layout isn't
 # known where the call is compiled, so the value is stored as a word.
 
 import std.array

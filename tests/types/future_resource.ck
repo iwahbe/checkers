@@ -1,4 +1,4 @@
-# A future of a resource is a resource (D156 l): it must be joined exactly
+# A future of a resource is a resource (#643 l): it must be joined exactly
 # once, so a resource made in a behaviour can't be dropped with its future.
 module future_resource
 

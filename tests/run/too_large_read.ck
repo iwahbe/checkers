@@ -1,4 +1,4 @@
-# A count or position that doesn't fit a machine word (D185): `read_exactly`
+# A count or position that doesn't fit a machine word (#661): `read_exactly`
 # gives fewer bytes only at the end, `read_some` at most that many, and no byte
 # string has such a position.
 module too_large_read

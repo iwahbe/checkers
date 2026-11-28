@@ -1,4 +1,4 @@
-# Behaviours that wait don't hold a thread (D113, §13.8). Four readers each
+# Behaviours that wait don't hold a thread (#607, §13.8). Four readers each
 # wait for a child's output; the children answer only once the writer,
 # scheduled after the readers, gives them their input. If a waiting reader
 # held its thread, the writer would never run, on one thread or on several.

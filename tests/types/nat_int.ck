@@ -1,6 +1,6 @@
 module nat_int
 
-# `Nat` is a refinement of `Int` (D121).
+# `Nat` is a refinement of `Int` (#609).
 
 # (a) A `Nat` is an `Int`: free, also inside a type, and the two mix.
 fn widen n -> i : n~Nat, i~Int
@@ -27,7 +27,7 @@ fn closed a b -> r : a~Nat, b~Nat, r~Nat
 fn minus a b -> r : a~Nat, b~Nat, r~Nat
     a - b
 
-# A refinement is never gained inside a type (D71 c).
+# A refinement is never gained inside a type (#554 c).
 fn narrow_all is -> ns : is~List Int, ns~List Nat
     is
 

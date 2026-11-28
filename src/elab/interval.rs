@@ -1,7 +1,7 @@
-//! Arithmetic keeps constant bounds (D135): the result of `+ - * / %` on
+//! Arithmetic keeps constant bounds (#616): the result of `+ - * / %` on
 //! operands whose bounds are constants is that range, an anonymous
 //! refinement `(n~Nat, 1 <= n, n <= 256)`, laid out in arrays by the
-//! narrowest layout that holds it (D133 e).
+//! narrowest layout that holds it (#624 e).
 
 use super::*;
 pub use crate::range::{combine, Range};
@@ -17,7 +17,7 @@ pub enum Join {
     Other,
 }
 
-/// The narrowest array layout holding `r` (D135 d), as `Layout`'s code.
+/// The narrowest array layout holding `r` (#616 d), as `Layout`'s code.
 pub fn layout_for(r: Range) -> u8 {
     let (Some(lo), Some(hi)) = (r.lo, r.hi) else { return Layout::Words as u8 };
     let fits = |a: i128, b: i128| a <= lo && hi <= b;
@@ -85,7 +85,8 @@ impl Elab {
     pub fn type_range(&self, ty: &Val) -> Option<Range> {
         let mut r = Range::ANY;
         let mut v = crate::core::force_meta(&self.g, ty.clone());
-        for _ in 0..64 {
+        // However many aliases: unfolding them ends (see `core::unfold`).
+        loop {
             if let Val::Neutral(Head::Def(d), sp) = &v {
                 if sp.is_empty() {
                     if let Some(preds) = self.alias_preds.get(d) {
@@ -115,7 +116,7 @@ impl Elab {
         (0..=nb)
             .map(|k| {
                 let ty = if k < nb { &binders[k].3 } else { result };
-                let env = Rc::new((0..k).map(Val::var).collect::<Vec<_>>());
+                let env = (0..k).map(Val::var).collect::<crate::core::Env>();
                 let mut r = self.type_range(&eval(&self.g, &env, ty))?;
                 for p in preds.iter().filter(|p| p.is_post == (k == nb)) {
                     r = r.meet(subject_range(&p.tm, nb - k, &|t| self.constant(t)));
@@ -126,7 +127,7 @@ impl Elab {
     }
 
     /// An operand's value as a constant, in context `cx`: an integer known
-    /// at compile time (§8.9). An operation's range is its type's (D135):
+    /// at compile time (§8.9). An operation's range is its type's (#616):
     /// it isn't evaluated again, which would walk every operator chained
     /// below it.
     pub fn known_int(&self, cx: &Cx, t: &Tm) -> Option<i128> {
@@ -206,7 +207,7 @@ impl Elab {
         let levels: Vec<usize> = free.iter().rev().map(|i| depth - 1 - i).collect();
         let k = levels.len();
         let dense = |i: usize| k - 1 - levels.binary_search(&(depth - 1 - i)).unwrap();
-        let env = Rc::new((0..k).map(Val::var).collect::<Vec<_>>());
+        let env = (0..k).map(Val::var).collect::<crate::core::Env>();
         let v = eval(&self.g, &env, &crate::core::rename_free(&t, 0, &dense));
         if let Some(l) = crate::core::known_lit(&self.g, v.clone()) {
             return Some(Rc::new(Tm::Lit(l)));
@@ -296,7 +297,7 @@ impl Elab {
             // calls runs only once its module is proved.
             return None;
         }
-        if let Some(l) = crate::core::known_lit(&self.g, eval(&self.g, &Rc::new(Vec::new()), t)) {
+        if let Some(l) = crate::core::known_lit(&self.g, eval(&self.g, &crate::core::Env::new(), t)) {
             self.known_cache.borrow_mut().insert(key, Some(Tm::Lit(l.clone())));
             return Some(Tm::Lit(l));
         }
@@ -312,8 +313,8 @@ impl Elab {
             return None;
         }
         // Kept from an earlier build, if nothing it can run has changed.
-        let disk = crate::verify::cache_dir().map(|_| self.known_disk.borrow_mut().key(&self.g, t, ty));
-        if let Some(v) = disk.as_ref().and_then(|d| self.known_disk.borrow_mut().recall(&self.g, d)) {
+        let disk = crate::verify::cache_dir().map(|_| self.g.known_disk.borrow_mut().key(&self.g, t, ty));
+        if let Some(v) = disk.as_ref().and_then(|d| self.g.known_disk.borrow_mut().recall(&self.g, d)) {
             self.known_cache.borrow_mut().insert(key, Some(v.clone()));
             return Some(v);
         }
@@ -335,7 +336,7 @@ impl Elab {
             Err(_) => None,
         };
         if let (Some(d), Some(v)) = (&disk, &k) {
-            self.known_disk.borrow_mut().store(&self.g, d, v);
+            self.g.known_disk.borrow_mut().store(&self.g, d, v);
         }
         self.known_cache.borrow_mut().insert(key, k.clone());
         k
@@ -367,7 +368,7 @@ impl Elab {
         }
         let mut found = Vec::new();
         calls(t, &mut found);
-        let empty = Rc::new(Vec::new());
+        let empty = crate::core::Env::new();
         for c in &found {
             let (h, args) = c.spine();
             let Tm::Def(d) = h else { continue };
@@ -394,7 +395,7 @@ impl Elab {
     fn known_bool(&self, t: &Tm, depth: usize, work: u64) -> Option<bool> {
         let wk = &self.g.well_known;
         let saved = self.g.fuel.replace(crate::core::DEFAULT_FUEL);
-        let forced = crate::core::force(&self.g, eval(&self.g, &Rc::new(Vec::new()), t));
+        let forced = crate::core::force(&self.g, eval(&self.g, &crate::core::Env::new(), t));
         self.g.fuel.set(saved);
         match forced {
             Val::Con(c, _) if Some(c) == wk.true_con => return Some(true),
@@ -424,13 +425,13 @@ impl Elab {
         !crate::verify::proved(self, m).diags.iter().any(|d| d.is_error())
     }
 
-    /// Is definition `d` proved (§8.9)? One of an imported module, once that
-    /// module is proved with no errors (`module_proved`); one of the module
-    /// being checked, while it is checked or proved, once it and everything
-    /// it reaches are, on demand (`settle`).
+    /// Is definition `d` proved (§8.9)? One of a module being checked or
+    /// proved, the module checked or an imported one, once it and everything
+    /// it reaches are, on demand (`settle`); one of another module, once
+    /// that module is proved with no errors (`module_proved`).
     pub fn def_proved(&self, d: DefId) -> bool {
         let m = &self.g.defs[d.0 as usize].module;
-        if **m == *self.cur && (self.loading.iter().any(|l| *l == **m) || self.proving.borrow().contains(&**m)) {
+        if (**m == *self.cur && self.loading.iter().any(|l| *l == **m)) || self.proving.borrow().contains(&**m) {
             return self.settle(d);
         }
         self.module_proved(m)
@@ -506,7 +507,7 @@ impl Elab {
         }
     }
 
-    /// The type of a range (D135 c): `Nat`, `Int`, or an anonymous
+    /// The type of a range (#616 c): `Nat`, `Int`, or an anonymous
     /// refinement of one, made once per range.
     pub fn range_type(&mut self, r: Range) -> Val {
         let nat = r.lo.is_some_and(|l| l >= 0);
@@ -514,7 +515,7 @@ impl Elab {
             return if nat { self.nat() } else { self.int() };
         }
         if let Some(d) = self.ranges.get(&(r.lo, r.hi)) {
-            return eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(*d));
+            return eval(&self.g, &crate::core::Env::new(), &Tm::Def(*d));
         }
         let mut preds = Vec::new();
         // `n < 0` is `-(-n)`, and `-i128::MIN` is a `Big` literal.
@@ -544,11 +545,12 @@ impl Elab {
         let info = &mut self.g.defs[did.0 as usize];
         info.body = Some(base);
         info.ty = Tm::Univ(0);
+        info.free = true;
         self.alias_preds.insert(did, preds);
         self.alias_subject.insert(did, Rc::from("n"));
         self.g.well_known.layouts.push((did, layout_for(r)));
         self.ranges.insert((r.lo, r.hi), did);
-        eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(did))
+        eval(&self.g, &crate::core::Env::new(), &Tm::Def(did))
     }
 
     /// The join placeholder `expected` is, if it is one (before the first
@@ -571,7 +573,7 @@ impl Elab {
 
     /// The type of values that are each an `a` or a `b`, for a type
     /// parameter several values decide together: numbers' ranges joined
-    /// (D135), a type constructor's arguments joined one by one, and
+    /// (#616), a type constructor's arguments joined one by one, and
     /// otherwise the type without its refinement. Where `a` and `b` differ
     /// in more than refinements, `a`'s type: the value of type `b` is then
     /// reported where it is checked against it.
@@ -600,13 +602,13 @@ impl Elab {
         }
     }
 
-    /// Is `ty` a range this rule made (D135)?
+    /// Is `ty` a range this rule made (#616)?
     pub fn is_range(&self, ty: &Val) -> bool {
         matches!(crate::core::force_meta(&self.g, ty.clone()), Val::Neutral(Head::Def(d), _) if self.ranges.values().any(|r| *r == d))
     }
 
     /// The type an operator's other operand is checked against: a range's
-    /// base, so ranges don't spread through it (D135).
+    /// base, so ranges don't spread through it (#616).
     pub fn shared_operand_type(&self, ty: &Val) -> Val {
         if self.is_range(ty) {
             return self.arith_base(ty);
@@ -615,14 +617,14 @@ impl Elab {
         crate::core::class_type_base(&self.g, ty).unwrap_or_else(|| ty.clone())
     }
 
-    /// The type of `lt op rt` (D134, D135): `ty` is the operands' shared
+    /// The type of `lt op rt` (#616): `ty` is the operands' shared
     /// type, `lty` and `rty` their own.
     pub fn arith_type(&mut self, op: Prim, lc: Option<i128>, rc: Option<i128>, ty: &Val, lty: &Val, rty: &Val) -> Val {
         let nat_sub = op == Prim::Sub && crate::core::is_nat(&self.g, ty);
         match (self.operand_range(lc, lty), self.operand_range(rc, rty)) {
             (Some(a), Some(b)) => {
                 let r = combine(op, a, b, nat_sub);
-                // Never wider than D134's base: `Nat` stays `Nat`.
+                // Never wider than the base number type: `Nat` stays `Nat`.
                 let base_nat = crate::core::is_nat(&self.g, ty);
                 let r = if base_nat { r.meet(Range { lo: Some(0), hi: None }) } else { r };
                 self.range_type(r)

@@ -1,6 +1,6 @@
 module recovery
 
-# Recovery from syntax errors inside a body (D142 e): the rest of the body,
+# Recovery from syntax errors inside a body (#626 e): the rest of the body,
 # and the declarations after it, are still checked.
 
 record Point

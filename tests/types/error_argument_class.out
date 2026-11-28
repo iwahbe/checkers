@@ -1,0 +1,44 @@
+error[E0204]: unknown name `nothing`
+  --> error_argument_class.ck:16:10
+   |
+16 |     walk nothing
+   |          ^^^^^^^ not found
+
+error[E0213]: `parse` is a module, not a value
+  --> error_argument_class.ck:19:10
+   |
+19 |     walk parse
+   |          ^^^^^
+   = help: `parse` is a function of the class `Parsable`: write `parse.parse`
+
+error[E0204]: unknown name `missing_a`
+  --> error_argument_class.ck:23:11
+   |
+23 |     walk (missing_a, 1)
+   |           ^^^^^^^^^ not found
+
+error[E0204]: unknown name `missing_b`
+  --> error_argument_class.ck:27:18
+   |
+27 |     let y = pick missing_b
+   |                  ^^^^^^^^^ not found
+
+error[E0204]: unknown name `missing_c`
+  --> error_argument_class.ck:31:19
+   |
+31 |     let f = \x -> missing_c
+   |                   ^^^^^^^^^ not found
+
+error[E0204]: unknown name `missing_d`
+  --> error_argument_class.ck:35:11
+   |
+35 |     walk (missing_d + 1)
+   |           ^^^^^^^^^ not found
+
+error[E0204]: unknown name `missing_e`
+  --> error_argument_class.ck:38:18
+   |
+38 |     let y = pick missing_e
+   |                  ^^^^^^^^^ not found
+
+error_argument_class.ck: 7 errors, 0 warnings

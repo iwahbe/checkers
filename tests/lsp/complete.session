@@ -1,4 +1,4 @@
-# Completion (D142): the server runs `ckc complete` on the open text; each
+# Completion (#626): the server runs `ckc complete` on the open text; each
 # item replaces the word being typed and keeps the compiler's order.
 > {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-8"]}}}}
 < 1

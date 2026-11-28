@@ -38,9 +38,18 @@
 //! (`settle`), so the caller isn't made to build its closure.
 //!
 //! A literal or a value known at compile time (§8.9) passed to a function
-//! is put into a copy too (`known_data`), so the code using it is computed
-//! when compiling (`fold`); a recursive call passing a value computed from
-//! it is not a literal here, so it calls the general function.
+//! is put into a copy too, so the code using it is computed when compiling
+//! (`fold`). That is done where the call is folded (`specialize_folded`),
+//! so an argument that becomes static data only once the code around it
+//! is folded (`list.length [1, 2, 3]`) is put in as a literal is, into
+//! the same copy. The copy is the callee's erased code with the static
+//! arguments put in (`Body::Folded`), inlined and folded in turn like any
+//! other definition's, so a call in it passing such a value on gets its
+//! copy as well: specialization and folding reach a fixed point, within
+//! the bounds below. A copy's call of the function it copies passing a
+//! value computed from the one put in (`n - 1`) calls the general function
+//! (or a copy made already for that value), so recursion on a known value
+//! makes one copy, not one per step.
 //!
 //! Code growth is bounded: one copy per function and arguments put into
 //! it (memoized, so recursion and mutual recursion reuse the copy), each
@@ -50,8 +59,10 @@
 //! `CHECKERS_NO_SPEC=1` turns specialization off, to measure it.
 
 use crate::core::{max_var, DefId, Globals, Mult, Tm};
+use crate::native::ir::Ir;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// The largest argument put into a copy: nodes of its term. A dictionary
 /// growing at each call (polymorphic recursion) stops being specialized.
@@ -68,11 +79,26 @@ pub const MAX_COPIES: usize = 4096;
 #[derive(Clone)]
 pub struct Copy {
     pub of: DefId,
-    pub body: Tm,
+    pub body: Body,
     pub depth: usize,
     /// For each parameter of the copy, the binder of `of` it is (`None`:
     /// one for a variable of a function put in).
     pub binders: Vec<Option<usize>>,
+    /// The definition a runtime error in its code names: `of`, unless that
+    /// is private to another package than the program's (`report`).
+    pub owner: Option<DefId>,
+}
+
+/// A copy's code.
+#[derive(Clone)]
+pub enum Body {
+    /// A core term, compiled as the function's body is: made where a call
+    /// is erased.
+    Term(Tm),
+    /// Erased code: that of definition `from` (a copy itself, maybe) with
+    /// the static data `put` (one per parameter, `None` for those the copy
+    /// takes) in place of its parameters, made where a call is folded.
+    Folded { from: u32, put: Vec<Option<Arc<Ir>>>, code: Arc<Ir> },
 }
 
 /// The copies made so far; copy `i` is definition `base + i`.
@@ -88,11 +114,14 @@ pub struct Specs {
     /// A mirror of another program's copies (`mirror`): it makes none of
     /// its own, so their numbers stay the other program's.
     pub frozen: bool,
+    /// The definitions no runtime error names (`Globals::hidden`), as the
+    /// program was when this table was made.
+    hidden: std::collections::HashSet<u32>,
 }
 
 impl Specs {
-    pub fn new(base: u32) -> Specs {
-        Specs { base, memo: HashMap::new(), copies: Vec::new(), kept: HashMap::new(), for_values: false, frozen: false }
+    pub fn new(base: u32, hidden: std::collections::HashSet<u32>) -> Specs {
+        Specs { base, memo: HashMap::new(), copies: Vec::new(), kept: HashMap::new(), for_values: false, frozen: false, hidden }
     }
 
     /// The copy definition `d` is, if it is one.
@@ -111,6 +140,59 @@ impl Specs {
     pub fn origin(&self, d: u32) -> u32 {
         self.copy(d).map_or(d, |c| c.of.0)
     }
+
+    /// The definition a runtime error in `d`'s code names (`None`: no
+    /// definition's, as in a `check`, or a constant no runtime error names,
+    /// which `report` doesn't copy).
+    pub fn owner(&self, d: u32) -> Option<DefId> {
+        match self.copy(d) {
+            Some(c) => c.owner,
+            None => (!self.hidden(DefId(d))).then_some(DefId(d)),
+        }
+    }
+
+    /// Whether `d` is private to another package than the program's, so
+    /// that no runtime error names it (§6 rule 9).
+    pub fn hidden(&self, d: DefId) -> bool {
+        self.hidden.contains(&d.0)
+    }
+}
+
+/// The function to call for `f` in code whose runtime errors name `owner`:
+/// `f`, or if `f` is private to another package than the program's (§6
+/// rule 9), its copy whose own runtime errors name `owner` too. In the
+/// copy, `f`'s calls of such functions call their copies for `owner` in
+/// turn, and its lambdas, and functions put into copies made in it, are
+/// code of `owner` (`ir::Compiler::owner`). So a runtime error names the
+/// function the program can refer to whose call led to it: the one its
+/// own code called, of the package `f` is in. One copy per function and
+/// owner (memoized): recursion uses the copy.
+pub fn report(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId) -> DefId {
+    let mut t = cx.table.borrow_mut();
+    if !t.hidden(f) || t.frozen {
+        return f;
+    }
+    let key = format!("report|{}|{:?}", f.0, owner.map(|o| o.0));
+    if let Some(id) = t.memo.get(&key) {
+        return DefId(*id);
+    }
+    // A builtin has no code of its own: its errors name its caller already.
+    let Some(body) = crate::native::ir::body_of(g, cx.staged, f) else { return f };
+    let mut n = 0;
+    let mut b = &body;
+    while let Tm::Lam(_, _, _, x) = b {
+        n += 1;
+        b = x;
+    }
+    // A constant is computed once, so it isn't copied: no runtime error
+    // in its code names a function (`Specs::owner`).
+    if n == 0 {
+        return f;
+    }
+    let id = t.base + t.copies.len() as u32;
+    t.copies.push(Copy { of: f, body: Body::Term(body), depth: cx.depth, binders: (0..n).map(Some).collect(), owner });
+    t.memo.insert(key, id);
+    DefId(id)
 }
 
 /// Where a `Compiler` makes copies: the table, staged bodies, and how deep
@@ -134,6 +216,13 @@ fn size(t: &Tm, limit: usize) -> usize {
         n > limit
     });
     n
+}
+
+/// A closed type whose arrays are packed (`Bytes`'s `U8`): code indexing
+/// an array of it reads the element in place at that layout, rather than
+/// asking the array's header, so a function given it gets a copy.
+fn packed_type(g: &Globals, t: &Tm) -> bool {
+    crate::core::layout_of(g, &crate::core::eval(g, &Default::default(), t)).is_ok_and(|l| l != checkers_rt::array::Layout::Words as u8)
 }
 
 /// A dictionary built by instances' functions from types and other such
@@ -202,21 +291,50 @@ pub fn known_var(t: &Tm) -> Option<(&Tm, &Tm)> {
     }
 }
 
-/// `t` with the variable `depth` binds marked as bound to `f` (`f` is
-/// outside that binder): `known`.
-pub fn know(t: &Tm, f: &Tm, depth: usize) -> Tm {
+/// The functions known to be bound to the variables of code being
+/// compiled (`ir`): one entry per binder, innermost first. Extending it
+/// shares what is there, so code of n nested `let`s is compiled in time
+/// and memory in proportion to n.
+pub type Fns = crate::pvec::PVec<Option<Rc<Bound>>>;
+
+/// A variable bound to a known function.
+pub struct Bound {
+    /// The function, over the variables outside the variable's binder.
+    pub f: Tm,
+    /// Whether the code compiled so far uses the variable itself, so its
+    /// closure is built.
+    pub used: std::cell::Cell<bool>,
+}
+
+/// `t`, under `depth` binders of code where `fns` is known, with each
+/// variable bound to a known function marked as bound to it (`known`).
+pub fn know(t: &Tm, fns: &Fns, depth: usize) -> Tm {
     match t {
-        Tm::Var(v) if *v == depth => known(Tm::Var(*v), crate::core::rename_free(f, 0, &|x| x + depth + 1)),
-        _ => t.map_sub(|x, n| know(x, f, depth + n)),
+        Tm::Var(v) if *v >= depth => match (v - depth).checked_add(1).and_then(|k| fns.len().checked_sub(k)).and_then(|l| fns.get(l)) {
+            Some(Some(b)) => known(Tm::Var(*v), crate::core::rename_free(&b.f, 0, &|x| x + v + 1)),
+            _ => t.clone(),
+        },
+        _ if known_var(t).is_some() => t.clone(),
+        _ => t.map_sub(|x, n| know(x, fns, depth + n)),
     }
 }
 
+/// Whether `t` is small enough to be put into a copy or a `let`'s body,
+/// whatever its variables are bound to (`know` only makes it larger).
+pub fn small(t: &Tm) -> bool {
+    size(t, MAX_ARG) <= MAX_ARG
+}
+
 /// A known function with each lambda's body (under all its parameters)
-/// marked as code of `owner`, unless it is marked already.
-fn mark(t: &Tm, owner: Option<DefId>) -> Tm {
+/// marked as code of `owner`, unless it is marked already; and each
+/// definition's function no runtime error names (`hidden`), so that the
+/// copy calls that function's copy for `owner` (`report`), as the code
+/// passing it would.
+fn mark(t: &Tm, owner: Option<DefId>, hidden: &dyn Fn(DefId) -> bool) -> Tm {
     match t {
         Tm::Lam(..) => mark_body(t, owner),
-        Tm::App(f, a, i, m) => Tm::App(Rc::new(mark(f, owner)), Rc::new(mark(a, owner)), *i, *m),
+        Tm::Def(d) if hidden(*d) => mark_body(t, owner),
+        Tm::App(f, a, i, m) => Tm::App(Rc::new(mark(f, owner, hidden)), Rc::new(mark(a, owner, hidden)), *i, *m),
         _ => t.clone(),
     }
 }
@@ -262,6 +380,8 @@ pub fn known_fn(g: &Globals, staged: Option<&crate::stage::Staged>, t: &Tm) -> b
         args.push((a, *m));
         h = f;
     }
+    // A definition's function marked as code of the one passing it (`mark`).
+    let h = marked(h).map_or(h, |(_, x)| x);
     match h {
         Tm::Lam(..) => args.is_empty(),
         Tm::Def(d) if !g.well_known.dict_fns.contains(d) => {
@@ -308,13 +428,8 @@ fn free_in_order(t: &Tm, depth: usize, out: &mut Vec<usize>) {
 
 /// The copy of `f` to call with `args` (each with its multiplicity), if
 /// one passes a known instance's dictionary or a known function, in code
-/// of `owner`.
-/// A value known at compile time written into the code: a literal, or a
-/// known value (§8.9). A copy made for it computes with it there (`fold`).
-fn known_data(t: &Tm) -> bool {
-    matches!(t, Tm::Lit(_) | Tm::Known(_))
-}
-
+/// of `owner`. A literal or a known value is put in where the call is
+/// folded (`specialize_folded`), with the values folding finds.
 pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args: &[(&Rc<Tm>, Mult)]) -> Option<Spec> {
     if off() || cx.table.borrow().frozen {
         return None;
@@ -326,9 +441,17 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
         return None;
     }
     let fun = |a: &Tm| small_fn(g, cx.staged, a);
-    let values = cx.table.borrow().for_values;
-    let known_data = |a: &Tm| values && known_data(a);
-    if !args.iter().any(|(a, m)| *m != Mult::Zero && (closed_dict(g, a) || fun(a) || known_data(a))) {
+    // Which parameters are types (the rest of the erased ones are proofs,
+    // never evaluated here).
+    let mut types = Vec::new();
+    let mut ty = g.defs.get(f.0 as usize).map(|i| &i.ty);
+    while let Some(Tm::Pi(_, _, _, dom, cod)) = ty {
+        let env = (0..types.len()).map(crate::core::Val::var).collect();
+        types.push(matches!(crate::core::force_meta(g, crate::core::eval(g, &env, dom)), crate::core::Val::Univ(_)));
+        ty = Some(cod);
+    }
+    let packed = |j: usize, a: &Tm| types.get(j) == Some(&true) && max_var(a).is_none() && size(a, MAX_ARG) <= MAX_ARG && packed_type(g, a);
+    if !args.iter().enumerate().any(|(j, (a, m))| if *m == Mult::Zero { packed(j, a) } else { closed_dict(g, a) || fun(a) }) {
         return None;
     }
     let body = crate::native::ir::body_of(g, cx.staged, f)?;
@@ -349,18 +472,18 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
         .enumerate()
         .map(|(j, (a, m))| match m {
             Mult::Zero => (max_var(a).is_none() && size(a, MAX_ARG) <= MAX_ARG).then(|| (***a).clone()),
-            _ if closed_dict(g, a) || known_data(a) => Some((***a).clone()),
+            _ if closed_dict(g, a) => Some((***a).clone()),
             _ if fun(a) => {
                 let a = settle(g, cx, known_var(a).map_or(&***a, |(_, f)| f));
                 let a = &a;
                 free_in_order(a, 0, &mut caps);
                 kept[j] = keeps(g, cx, f, j);
-                Some(mark(a, owner))
+                Some(mark(a, owner, &|d| cx.table.borrow().hidden(d)))
             }
             _ => None,
         })
         .collect();
-    if !pick.iter().zip(args).any(|(p, (_, m))| p.is_some() && *m != Mult::Zero) {
+    if !pick.iter().zip(args).enumerate().any(|(j, (p, (a, m)))| p.is_some() && (*m != Mult::Zero || packed(j, a))) {
         return None;
     }
     // Cap `j` is variable `m - 1 - j` under the copy's `m` parameters for them.
@@ -376,8 +499,10 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
     if m == 0 && n == k && gone.iter().all(|p| *p) {
         gone[k - 1] = false;
     }
-    let key = format!("{}|{}|{:?}", f.0, m, pick);
     let mut t = cx.table.borrow_mut();
+    // A function no runtime error names: a copy for each owner (`report`).
+    let named = if t.hidden(f) { owner } else { Some(f) };
+    let key = format!("{}|{}|{:?}|{:?}", f.0, m, pick, named.map(|o| o.0));
     let id = match t.memo.get(&key) {
         Some(id) => *id,
         None => {
@@ -389,7 +514,7 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
             // The parameters not put in, the variables' (`caps`), then those
             // after the first `k`.
             let binders = (0..k).filter(|j| !gone[*j]).map(Some).chain((0..m).map(|_| None)).chain((k..n).map(Some)).collect();
-            t.copies.push(Copy { of: f, body: put_in(&body, &picked, &kept, &gone, m), depth: cx.depth + 1, binders });
+            t.copies.push(Copy { of: f, body: Body::Term(put_in(&body, &picked, &kept, &gone, m)), depth: cx.depth + 1, binders, owner: named });
             t.memo.insert(key, id);
             id
         }
@@ -555,4 +680,133 @@ fn replace(t: &Tm, pick: &[Option<&Tm>], kept: &[bool], at: &[Option<usize>], r:
         Tm::Var(v) if *v >= depth => Tm::Var(v - k + r + m),
         _ => t.map_sub(|x, n| replace(x, pick, kept, at, r, m, depth + n)),
     }
+}
+
+/// Nodes of erased code, counting up to `limit + 1`; static data counts as
+/// one (a known value, §14).
+fn ir_size(ir: &Ir, limit: usize) -> usize {
+    let mut n = 1;
+    for (x, _) in ir.subterms() {
+        if n > limit {
+            break;
+        }
+        n += ir_size(x, limit - n.min(limit));
+    }
+    n
+}
+
+/// A call folded (§8.9): of definition `h`, whose erased code is
+/// `code[h]`, with `args`, some of them static data (`static_data`) and
+/// some not, in code of definition `here` (`depth` deep in copies of
+/// functions, 0 for its own code). The copy of `h` with that data put in,
+/// and the arguments the call then passes; `None` where none is made (as
+/// for `specialize`, and for a copy's call of the function it copies,
+/// which passes values computed from those put in: it calls the general
+/// function unless a copy for those values exists already).
+#[allow(clippy::too_many_arguments)]
+pub fn specialize_folded(
+    g: &Globals,
+    table: &std::cell::RefCell<Specs>,
+    code: &HashMap<u32, Arc<Ir>>,
+    here: u32,
+    depth: usize,
+    h: u32,
+    args: &[Arc<Ir>],
+    static_data: &dyn Fn(&Ir) -> bool,
+    key: &dyn Fn(&Ir) -> Option<String>,
+) -> Option<(DefId, Vec<Arc<Ir>>)> {
+    let mut t = table.borrow_mut();
+    if off() || t.frozen || !t.for_values {
+        return None;
+    }
+    let of = t.origin(h);
+    let wk = &g.well_known;
+    if wk.class_fns.contains(&DefId(of)) || wk.dict_fns.contains(&DefId(of)) {
+        return None;
+    }
+    let body = code.get(&h)?;
+    let mut n = 0;
+    let mut b = &**body;
+    while let Ir::Lam(_, x) = b {
+        n += 1;
+        b = x;
+    }
+    let k = n.min(args.len());
+    // What is put in: static data small enough, which a key names.
+    let mut put: Vec<Option<(Arc<Ir>, String)>> = args[..k]
+        .iter()
+        .map(|a| (static_data(a) && ir_size(a, MAX_ARG) <= MAX_ARG).then(|| key(a).map(|s| (a.clone(), s))).flatten())
+        .chain((k..n).map(|_| None))
+        .collect();
+    if !put.iter().flatten().any(|(a, _)| !matches!(**a, Ir::Erased)) {
+        return None;
+    }
+    // A copy that would take no parameters keeps the last, so that it stays
+    // a function and isn't made a constant.
+    if put.iter().all(Option::is_some) {
+        put[n - 1] = None;
+    }
+    let key = format!("folded|{h}|{}", put.iter().map(|p| p.as_ref().map_or("-", |(_, s)| s)).collect::<Vec<_>>().join("|"));
+    let id = match t.memo.get(&key) {
+        Some(id) => *id,
+        None => {
+            // In a copy of `h`'s function (`depth > 0`), a value put in is
+            // one computed from those put into it (`n - 1`).
+            if (of == here && depth > 0) || t.copies.len() >= MAX_COPIES || depth >= MAX_DEPTH {
+                return None;
+            }
+            let id = t.base + t.copies.len() as u32;
+            let put: Vec<Option<Arc<Ir>>> = put.iter().map(|p| p.as_ref().map(|(a, _)| a.clone())).collect();
+            let from: Vec<Option<usize>> = match t.copy(h) {
+                Some(c) => c.binders.clone(),
+                None => (0..n).map(Some).collect(),
+            };
+            let binders = (0..n).filter(|j| put[*j].is_none()).map(|j| from.get(j).copied().flatten()).collect();
+            let code = Arc::new(put_in_code(body, &put));
+            let owner = t.owner(h);
+            t.copies.push(Copy { of: DefId(of), body: Body::Folded { from: h, put, code }, depth: depth + 1, binders, owner });
+            t.memo.insert(key, id);
+            id
+        }
+    };
+    let rest = args.iter().enumerate().filter(|(j, _)| *j >= k || put[*j].is_none()).map(|(_, a)| a.clone()).collect();
+    Some((DefId(id), rest))
+}
+
+/// Erased code of a function of `put.len()` parameters, with the static
+/// data `put` (closed) in place of the parameters it gives, and lambdas
+/// for the others, in order.
+fn put_in_code(code: &Ir, put: &[Option<Arc<Ir>>]) -> Ir {
+    let n = put.len();
+    let mut lams = Vec::new();
+    let mut b = code;
+    for _ in 0..n {
+        let Ir::Lam(o, x) = b else { unreachable!("a copy is made for parameters the function takes") };
+        lams.push(*o);
+        b = x;
+    }
+    // Where each parameter is among the `r` the copy takes.
+    let mut at = Vec::new();
+    let mut r = 0;
+    for p in put {
+        at.push(p.is_none().then_some(r));
+        r += usize::from(p.is_none());
+    }
+    fn go(ir: &Ir, put: &[Option<Arc<Ir>>], at: &[Option<usize>], r: usize, depth: usize) -> Ir {
+        let n = put.len();
+        match ir {
+            Ir::Var(v) if *v >= depth && v - depth < n => {
+                let j = n - 1 - (v - depth);
+                match (&put[j], at[j]) {
+                    (Some(c), _) => crate::native::ir::shift(c, 0, 0),
+                    (None, Some(i)) => Ir::Var(depth + r - 1 - i),
+                    (None, None) => unreachable!("a parameter not put in is taken"),
+                }
+            }
+            Ir::Var(v) if *v >= depth => Ir::Var(v - n + r),
+            _ => ir.map_subterms(|x, k| go(x, put, at, r, depth + k)),
+        }
+    }
+    let body = go(b, put, &at, r, 0);
+    lams.into_iter().zip(put).rev().fold(body, |b, (o, p)| if p.is_some() { b } else { Ir::Lam(o, Arc::new(b)) })
 }

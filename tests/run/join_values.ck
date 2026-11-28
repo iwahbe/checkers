@@ -1,4 +1,4 @@
-# D174–D176: `join` gives the values of a future or a tuple of futures,
+# #673, #659, #662: `join` gives the values of a future or a tuple of futures,
 # waiting (parked) until they are there.
 module join_values
 
@@ -19,7 +19,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
         sum [1, 2, 3]
     let b = future.fork sched (\_ -> "six")
     let c = future.ready 15
-    # `ts` is inferred: Then Nat (Then String (Last Nat)) (D175).
+    # `ts` is inferred: Then Nat (Then String (Last Nat)) (#659).
     let (x, y, z) = future.join (a, b, c)
     terminal.print_line (debug x ++ " is " ++ y) term
     let w = future.join a

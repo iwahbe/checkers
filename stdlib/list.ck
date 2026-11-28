@@ -23,6 +23,34 @@ export transparent fn all p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a,
         []        -> True
         x :: rest -> p x and all p rest
 
+# Whether `p` holds for some element (`False` for an empty list). `p` is
+# called only with elements of `xs`, so it may assume `contains xs x`:
+#
+# ```
+# check any (\x -> x > 2) [1, 2, 3]
+# check not (any (\x -> x > 2) [])
+# ```
+export transparent fn any p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a, r~Bool
+    match xs
+        []        -> False
+        x :: rest -> p x or any p rest
+
+# `p` holds for some element exactly when it doesn't fail for every one.
+export lemma any_all p xs : p~(x~a -> Bool, contains xs x), xs~List a
+    ensures any p xs == not (all (\x -> not (p x)) xs)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have any_all p rest
+
+# `p` holds for every element exactly when it fails for none.
+export lemma all_any p xs : p~(x~a -> Bool, contains xs x), xs~List a
+    ensures all p xs == not (any (\x -> not (p x)) xs)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have all_any p rest
+
 # The elements in reverse order.
 export transparent fn reverse xs -> ys : xs~List a, ys~List a
     reverse_onto xs []
@@ -97,6 +125,23 @@ export lemma take_drop n xs : n~Nat, xs~List a
                 match n
                     0 -> auto
                     _ -> have take_drop (n - 1) rest
+
+# Dropping at most `length xs` elements from `xs ++ ys` drops them from `xs`.
+export lemma drop_append_within n xs ys : n~Nat, xs~List a, ys~List a, n <= length xs
+    ensures drop n (xs ++ ys) == drop n xs ++ ys
+    proof
+        match xs
+            []        -> auto
+            _ :: rest ->
+                match n
+                    0 -> auto
+                    _ -> have drop_append_within (n - 1) rest ys
+
+# Dropping all of `xs` from `xs ++ ys` leaves `ys`.
+export lemma drop_append xs ys : xs~List a, ys~List a
+    ensures drop (length xs) (xs ++ ys) == ys
+    proof
+        have drop_append_within (length xs) xs ys
 
 # The elements of `xs ++ ys` are those of `xs` and those of `ys`.
 export lemma bag_append xs ys : xs~List a, ys~List a
@@ -220,6 +265,17 @@ export transparent fn head xs -> r : xs~List a, r~Option a
     match xs
         []     -> None
         x :: _ -> Some x
+
+# `drop i xs` has a first element exactly when `i` is a position in `xs`.
+export lemma head_drop i xs : i~Nat, xs~List a
+    ensures (head (drop i xs) != None) == (i < length xs)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest ->
+                match i
+                    0 -> auto
+                    _ -> have head_drop (i - 1) rest
 
 # Moving an element to the front keeps the same elements.
 export lemma perm_middle xs y ys : xs~List a, y~a, ys~List a

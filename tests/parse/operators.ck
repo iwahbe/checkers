@@ -11,7 +11,7 @@ check -x * y
 check f -1
 check not (a < b)
 
-# Glued `.`/`[` vs spaced (D22)
+# Glued `.`/`[` vs spaced (#526)
 check v.stop == len src
 check decimal.scan_json src i
 check Some src[i]

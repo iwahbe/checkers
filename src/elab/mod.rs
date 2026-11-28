@@ -2,7 +2,7 @@
 //!
 //! Bidirectional checking with implicit arguments solved by pattern
 //! unification. `match` is compiled to case trees with exhaustiveness
-//! checking (D4). Predicates in constraints are type-checked as `Bool` and
+//! checking (#498). Predicates in constraints are type-checked as `Bool` and
 //! recorded for the prover (M3).
 
 mod classes;
@@ -20,6 +20,7 @@ pub(crate) mod order;
 mod pattern;
 mod qualify;
 pub use pattern::BINDING_HELP;
+mod reach;
 mod refine;
 pub mod settle;
 mod template;
@@ -34,13 +35,14 @@ use crate::source::{SourceFile, Span};
 use crate::syntax::ast;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
+use crate::pvec::PVec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sym {
     Def(DefId),
     Ty(TyId),
     Con(ConId),
-    /// The overloaded built-in `len` (D38)
+    /// The overloaded built-in `len` (#528)
     Len,
     Univ,
 }
@@ -97,6 +99,9 @@ pub struct FnMeta {
     pub builtin: bool,
     /// The result's name, if it has one (`-> y`).
     pub result: Option<String>,
+    /// The result is declared `own` (`-> k : k~own (Unit -> Unit)`): the
+    /// caller uses it exactly once (§8.4).
+    pub result_own: bool,
 }
 
 impl FnMeta {
@@ -180,21 +185,35 @@ pub struct Local {
     /// What it is known to be at compile time, once asked
     /// (`Elab::known_local`).
     pub known: std::cell::OnceCell<Option<Rc<Tm>>>,
+    /// The bound locals its value refers to, by level, outermost first,
+    /// once asked (`Elab::local_refers`).
+    pub refers: std::cell::OnceCell<Rc<[usize]>>,
 }
 
 #[derive(Clone, Default)]
 pub struct Cx {
-    /// Shared, so that evaluating under the context doesn't copy it.
-    pub env: Rc<Vec<Val>>,
-    pub locals: Vec<Local>,
+    /// The locals' values. Each part of a context is persistent, so a copy
+    /// shares it: a context kept for later, as a constraint left until the
+    /// module's bodies are checked keeps the one it was made in, costs
+    /// nothing to keep however many locals are in scope.
+    pub env: Env,
+    pub locals: PVec<Local>,
+    /// The levels of the λ-bound locals (`Local::bound`), in order: what an
+    /// unknown abstracts over, and where a dictionary in scope is, without
+    /// a walk over every local.
+    bound: PVec<usize>,
     /// The locals' names, kept apart so that a constraint left for later
     /// keeps them without a copy (`names`).
     names: Names,
-    /// Elaborating a type position (after `~`): `Uname`s prefer the type namespace (D26).
+    /// Elaborating a type position (after `~`): `Uname`s prefer the type namespace (#521).
     pub type_pos: bool,
     /// Facts in scope (§7.1): `Bool` values known to be true, tagged with the
-    /// context length when they were added.
-    pub facts: Vec<(usize, Val)>,
+    /// context length when they were added, in order.
+    pub facts: PVec<(usize, Val)>,
+    /// The levels of the locals of each name, outermost first, so that a
+    /// name is looked up in scope (`lookup`, `Scope::count`) in time
+    /// logarithmic in the number of names, not linear in the locals.
+    named: crate::pmap::PMap<Name, PVec<usize>>,
 }
 
 impl Scope for Cx {
@@ -206,6 +225,9 @@ impl Scope for Cx {
     }
     fn at(&self, level: usize) -> Option<u32> {
         self.locals[level].span.map(|s| s.start)
+    }
+    fn count(&self, x: &str) -> usize {
+        self.named.get(x).map_or(0, |ls| ls.len())
     }
 }
 
@@ -227,16 +249,19 @@ impl Cx {
     }
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
-        Rc::make_mut(&mut self.env).push(Val::var(l));
+        self.env.push(Val::var(l));
+        self.bound.push(l);
+        self.name_more(name, l);
         self.names.push(Rc::from(name));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default() });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
-        Rc::make_mut(&mut self.env).push(val);
+        self.env.push(val);
+        self.name_more(name, l);
         self.names.push(Rc::from(name));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default() });
         l
     }
     /// `define`, by term `def` (over the locals before it) whose value is `val`.
@@ -246,30 +271,54 @@ impl Cx {
         l
     }
     pub fn pop(&mut self) {
-        Rc::make_mut(&mut self.env).pop();
-        self.names.pop();
-        self.locals.pop();
-        let n = self.locals.len();
-        self.facts.retain(|(l, _)| *l <= n);
+        let n = self.lvl().saturating_sub(1);
+        self.truncate(n);
+    }
+    /// The local at `level` is named `name`.
+    fn name_more(&mut self, name: &str, level: usize) {
+        let mut ls = self.named.get(name).cloned().unwrap_or_default();
+        ls.push(level);
+        self.named.insert(Rc::from(name), ls);
     }
     pub fn truncate(&mut self, n: usize) {
-        Rc::make_mut(&mut self.env).truncate(n);
+        for l in n..self.lvl() {
+            let name = self.locals[l].name.clone();
+            let mut ls = self.named.get(&*name).cloned().unwrap_or_default();
+            ls.pop();
+            if ls.is_empty() {
+                self.named.remove(&*name);
+            } else {
+                self.named.insert(name, ls);
+            }
+        }
+        self.env.truncate(n);
         self.names.truncate(n);
         self.locals.truncate(n);
-        self.facts.retain(|(l, _)| *l <= n);
+        while self.bound.last().is_some_and(|l| *l >= n) {
+            self.bound.pop();
+        }
+        // In order of the levels they were added at.
+        while self.facts.last().is_some_and(|(l, _)| *l > n) {
+            self.facts.pop();
+        }
     }
     pub fn assume(&mut self, fact: Val) {
         self.facts.push((self.locals.len(), fact));
     }
+    /// The level of the innermost local named `name`.
     pub fn lookup(&self, name: &str) -> Option<usize> {
-        self.locals.iter().rposition(|l| l.name.as_ref() == name)
+        self.named.get(name).and_then(|ls| ls.last().copied())
     }
     pub fn var(&self, lvl: usize) -> Tm {
         Tm::Var(self.lvl() - lvl - 1)
     }
+    /// The levels of the λ-bound locals, outermost first.
+    pub fn bound(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        self.bound.iter().copied()
+    }
 }
 
-/// A constraint on an operator's operand type, checked after the declaration (D38).
+/// A constraint on an operator's operand type, checked after the declaration (#528).
 #[derive(Clone)]
 pub struct Deferred {
     pub ty: Val,
@@ -290,12 +339,12 @@ pub enum OpClass {
     Ordered,
     Concat,
     HasLen,
-    /// `==`/`!=` in compiled code: no functions (D125).
+    /// `==`/`!=` in compiled code: no functions (#614).
     Comparable,
 }
 
 /// A use of a generic function in compiled code: its type parameters'
-/// arguments, for D125 (b).
+/// arguments, for #614 (b).
 #[derive(Clone)]
 pub struct Inst {
     pub caller: Option<DefId>,
@@ -307,7 +356,7 @@ pub struct Inst {
     pub span: Span,
 }
 
-/// Why a function's type parameter must not be a function type (D125 b):
+/// Why a function's type parameter must not be a function type (#614 b):
 /// the function that compares it with `==`, and that parameter's name.
 #[derive(Clone)]
 pub struct EqReq {
@@ -347,9 +396,9 @@ pub enum ObKind {
     TypeParams { ty: String, written: String },
     /// A behaviour must hand back contents of the cown's refinement (§8.5).
     CownInvariant { alias: String },
-    /// A value checked against a refinement alias from a type argument (D71).
+    /// A value checked against a refinement alias from a type argument (#554).
     Refined { alias: String, value: String },
-    /// A refinement replaced by another in a type (D83, D85): for any value
+    /// A refinement replaced by another in a type (#575, #579): for any value
     /// of `sub`, the predicates of `sup` hold.
     Weaken { role: WeakenRole, value: String, sub: String, sup: String, callee: Option<String> },
     /// A `when`'s cowns differ (§8.5): two of them as written. `held`: the
@@ -394,7 +443,7 @@ pub enum ObKind {
     KnownResult { call: String, alias: String, inside: bool, pres: String, inst: String, member: String },
     Auto,
     Have,
-    /// A case a `match` leaves out can't occur there (D144 e): its pattern.
+    /// A case a `match` leaves out can't occur there (#633 e): its pattern.
     /// `binding`: the pattern of a `let`, a lambda's parameter or `<-`,
     /// not a `match`.
     Uncovered { case: String, binding: bool },
@@ -430,7 +479,7 @@ pub enum VacuityKind {
     ClassType { subject: String },
 }
 
-/// Where a branch was entered, asked whether it can be reached (D144 d).
+/// Where a branch was entered, asked whether it can be reached (#633 d).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbeKind {
     /// A `match` arm, at its pattern.
@@ -452,7 +501,7 @@ pub struct Probe {
     pub before: usize,
 }
 
-/// Where a refinement is weakened (D83, D85).
+/// Where a refinement is weakened (#575, #579).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WeakenRole {
     /// The values a type holds (`List (n~Int, n >= 6)` as `List Big`).
@@ -494,7 +543,7 @@ pub struct Obligation {
 }
 
 /// A predicate from a header, constructor or alias, as a term over its binders.
-/// Arithmetic whose operands' type wasn't known yet (D134, D135): its
+/// Arithmetic whose operands' type wasn't known yet (#616): its
 /// result's type (a meta) is settled when it is.
 pub struct ArithResult {
     pub result: Val,
@@ -505,7 +554,7 @@ pub struct ArithResult {
     /// needs of the operand terms, which can be long (`1 + 1 + …`).
     pub left: Option<i128>,
     pub right: Option<i128>,
-    /// Each operand's own type (D135).
+    /// Each operand's own type (#616).
     pub left_ty: Val,
     pub right_ty: Val,
 }
@@ -593,7 +642,7 @@ pub struct CownInv {
     pub preds: Vec<Pred>,
     pub args: Vec<Val>,
     /// The component of the body's tuple, with several cowns, and whether
-    /// it is the last (then the rest of the tuple, D174).
+    /// it is the last (then the rest of the tuple, #673).
     pub proj: Option<(usize, bool)>,
 }
 
@@ -623,9 +672,9 @@ pub struct Elab {
     pub index: Vec<index::NameUse>,
     /// That module.
     pub index_of: Option<String>,
-    /// For `ckc index` (D161): every module of the package is indexed.
+    /// For `ckc index` (#648): every module of the package is indexed.
     pub index_all: Option<HashSet<String>>,
-    /// Different for every elaborator a process makes (keys caches, D153).
+    /// Different for every elaborator a process makes (keys caches, #638).
     pub uid: u64,
     /// Where each global is declared: module and the span of its name.
     pub decl_at: HashMap<index::Target, (String, Span)>,
@@ -634,35 +683,35 @@ pub struct Elab {
     /// `function`, `lemma`, `constant` or `type` (an alias).
     pub def_class: HashMap<DefId, &'static str>,
     pub diags: Vec<(String, Diagnostic)>,
-    /// Each module's declarations: span and what they declare (D122).
+    /// Each module's declarations: span and what they declare (#599).
     pub decl_spans: HashMap<String, Vec<(Span, Option<Sym>)>>,
     seen: HashSet<(String, u32, u32, String)>,
     pub cur: String,
     loading: Vec<String>,
-    /// Where `import a.b` looks for `a/b.ck` (D53).
+    /// Where `import a.b` looks for `a/b.ck` (#548).
     pub base_dir: Option<std::path::PathBuf>,
     /// Imported program modules (not the standard library), dependencies first.
     pub user_modules: Vec<String>,
-    /// Each module's imports, by name (for D143's keys).
+    /// Each module's imports, by name (for #628's keys).
     pub module_deps: HashMap<String, Vec<String>>,
     /// The modules of the instances each module's checking chose, other
-    /// than its own (D143's keys, #272): an instance is found wherever its
+    /// than its own (#628's keys, #272): an instance is found wherever its
     /// module is loaded, so it may be in a module not imported.
     pub instance_deps: HashMap<String, std::collections::BTreeSet<String>>,
-    /// The package of each module of a dependency (D111); others are the
+    /// The package of each module of a dependency (#608); others are the
     /// program's own package, or `std`.
     pub module_pkg: HashMap<String, String>,
     pub deferred: Vec<Deferred>,
-    /// Results of arithmetic whose operands' type wasn't known yet (D134):
+    /// Results of arithmetic whose operands' type wasn't known yet:
     /// the result's type (a meta), the operands' type, the level.
     pub arith_results: Vec<ArithResult>,
-    /// The anonymous refinement made for each range (D135).
+    /// The anonymous refinement made for each range (#616).
     pub ranges: HashMap<(Option<i128>, Option<i128>), DefId>,
-    /// Inferred `if`s and `match`es whose branches' ranges join (D135).
+    /// Inferred `if`s and `match`es whose branches' ranges join (#616).
     pub joins: HashMap<MetaId, interval::Join>,
     /// The type `check` inferred for what it checked, if it did.
     pub last_checked: Option<Val>,
-    /// An arithmetic operation's operands' own types (D135).
+    /// An arithmetic operation's operands' own types (#616).
     pub operand_types: Option<(Val, Val)>,
     pub fn_meta: HashMap<DefId, FnMeta>,
     pub cur_fn: Option<DefId>,
@@ -670,18 +719,18 @@ pub struct Elab {
     /// Definitions whose bodies are being elaborated in this module (termination groups).
     pub module_fns: Vec<DefId>,
     pub obligations: Vec<Obligation>,
-    /// Branches to ask about (D144 d).
+    /// Branches to ask about (#633 d).
     pub probes: Vec<Probe>,
     pub vacuities: Vec<Vacuity>,
     /// The declaration the next `signature` is for, to ask whether its
     /// preconditions can hold (E0457).
     pub sig_vacuity: Option<(VacuityKind, String, Span)>,
-    /// The module checked, whose exported `main` is the program's (D31).
+    /// The module checked, whose exported `main` is the program's (#517).
     pub root: Option<String>,
-    /// References between declarations, for unused code (D144).
+    /// References between declarations, for unused code (#633).
     pub refs: Vec<unused::Ref>,
     /// Values whose every field is observed: formatted, or compared with
-    /// `==` (their type, solved later), for unused fields (D144).
+    /// `==` (their type, solved later), for unused fields (#633).
     pub observed: Vec<(String, Span, Val)>,
     /// Elaborating a template's tag (#126: `format` there is no call).
     pub in_tag: bool,
@@ -691,12 +740,12 @@ pub struct Elab {
     /// Calls of a template's tag outside a template (#126), by module and
     /// span: the help a type error there gets.
     pub tag_calls: HashMap<(String, u32, u32), String>,
-    /// Each program module's declarations, for unused code (D144).
+    /// Each program module's declarations, for unused code (#633).
     pub decl_table: HashMap<String, Vec<unused::Entry>>,
     /// Declarations found unused: their branches aren't asked about.
     pub dead: Vec<(String, Span)>,
     pub specs: HashMap<DefId, Spec>,
-    /// Functions exported `transparent`: reflected into importers' queries (D12).
+    /// Functions exported `transparent`: reflected into importers' queries (#506).
     pub transparent: HashSet<DefId>,
     /// Constructor invariants, over the type's parameters then the fields.
     pub con_invs: HashMap<ConId, Vec<Pred>>,
@@ -726,8 +775,6 @@ pub struct Elab {
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
     /// Values known at compile time, by term (`known_value`).
     pub known_cache: std::cell::RefCell<HashMap<String, Option<Tm>>>,
-    /// Known values kept across builds (§8.9): their keys and storage.
-    pub known_disk: std::cell::RefCell<crate::known_cache::KnownCache>,
     /// Definitions found to run at compile time (`runnable`).
     pub runnable_defs: std::cell::RefCell<HashSet<DefId>>,
     /// What was proved before the proofs phase, so that a module's own
@@ -750,11 +797,11 @@ pub struct Elab {
     pub alias_subject: HashMap<DefId, Name>,
     /// The result type of a function whose result type isn't written.
     pub result_metas: HashMap<MetaId, DefId>,
-    /// The function whose argument is being checked, for messages (D85).
+    /// The function whose argument is being checked, for messages (#579).
     pub arg_of: Option<String>,
     /// Inside a type or specification: no obligations (§7.1).
     pub in_spec: usize,
-    /// Inside a lemma's proof, which is never compiled (D125).
+    /// Inside a lemma's proof, which is never compiled (#614).
     pub in_proof: usize,
     /// Inside an argument to a `ghost` parameter, or a type bound `ghost`:
     /// erased, so a `ghost` variable used there isn't used at run time.
@@ -764,7 +811,7 @@ pub struct Elab {
     /// usage error (E0403) points at.
     pub ghost_uses: HashMap<(DefId, String), Vec<Span>>,
     /// Type parameters compared with `==` in compiled code, by function and
-    /// binder position (D125 b).
+    /// binder position (#614 b).
     pub eq_reqs: HashMap<DefId, BTreeMap<usize, EqReq>>,
     /// The type parameters each function needs described (#170): the
     /// function its requirement comes from, and the parameter's name there.
@@ -777,18 +824,18 @@ pub struct Elab {
     /// The last definition `sym_term` gave, for `insert` to record its use.
     pub pending_inst: Option<(DefId, Span)>,
     /// Elaborating the head of an application: a bare function name gets its
-    /// refined type only as a value (D85).
+    /// refined type only as a value (#579).
     pub in_app_head: bool,
     /// Postconditions to check where the current function returns (§7.1).
     pub post_target: Option<PostTarget>,
-    /// The goal of the proof being elaborated (D49).
+    /// The goal of the proof being elaborated (#547).
     pub proof_goal: Option<(Val, String)>,
     pub admits: Vec<Admit>,
     /// An application checked against a type with a refinement inside: its
-    /// result type is unified with this before its arguments are checked (D71).
+    /// result type is unified with this before its arguments are checked (#554).
     pub app_expected: Option<Val>,
     /// The argument being checked is for a parameter or field declared with a
-    /// refinement alias, so the call's own obligations cover it (D71).
+    /// refinement alias, so the call's own obligations cover it (#554).
     pub alias_covered: bool,
     /// The head of the application being elaborated checks its arguments'
     /// refinement aliases (a function with a spec or a constructor with invariants).
@@ -799,51 +846,48 @@ pub struct Elab {
     /// inside one recursive group once termination is analysed.
     pub measure_obs: Vec<(DefId, DefId, Obligation)>,
     /// Calls between functions of this module with no measure, which may
-    /// recurse: for guessing a measure (D150).
+    /// recurse: for guessing a measure (#641).
     pub rec_calls: Vec<termination::RecCall>,
     /// For each function, `Seq.size` of what its sequence patterns take
     /// apart (§9.8): a term at a level, and its text; measures to guess.
     pub seq_sizes: HashMap<DefId, Vec<(Tm, usize, String)>>,
-    /// Recursive groups whose measure is guessed in the proofs phase (D150).
+    /// Recursive groups whose measure is guessed in the proofs phase (#641).
     pub guess_groups: Vec<termination::GuessGroup>,
     /// Their functions: terminating by a measure, as with `decreasing`.
     pub guessed: HashSet<DefId>,
     /// Functions recursing by `decreasing` that end without their
-    /// preconditions (D118), found while proving.
+    /// preconditions, found while proving.
     pub ends_everywhere: std::sync::Mutex<HashSet<DefId>>,
     /// Heads of saturated calls (recursion through a partial application
     /// can't have its measure checked, E0303).
     pub saturated_heads: HashSet<Span>,
-    /// `check` declarations: module, span, elaborated `Bool` term (D40).
+    /// `check` declarations: module, span, elaborated `Bool` term (#532).
     pub checks: Vec<(String, Span, Tm)>,
     /// For a `check` that is an `==`: the type of its sides, so a false one
     /// can show them as values of that type (a `Char` as `c'a'`).
     pub check_eq_tys: HashMap<Span, Tm>,
     /// The operand type of the `==` elaborated last (for `check_eq_tys`).
     pub last_eq_ty: Option<Val>,
-    /// Variables that are linear because of their type (D39): (function, name) → (span, type).
+    /// Variables that are linear because of their type (#533): (function, name) → (span, type).
     pub resource_vars: HashMap<(DefId, String), (Span, String)>,
     /// Where each named local of a function is bound, for usage messages
-    /// about one that holds no resource (a one-shot closure, D171).
+    /// about one that holds no resource (a one-shot closure, #658).
     pub local_spans: HashMap<(DefId, String), Span>,
     /// Where a lambda's or `let`'s variable is bound, by its name's
-    /// allocation: two variables of one name are told apart (D171, D172 d). The
+    /// allocation: two variables of one name are told apart (#658, #672 d). The
     /// name is kept so the address isn't reused.
     pub binder_spans: HashMap<usize, (Name, Span)>,
     /// A lambda's parameter checked against a function type that takes it
     /// `own`: its type and the level it was bound at, so the usage check
-    /// can tell, once metas are solved, whether it may be a resource (D172 b).
+    /// can tell, once metas are solved, whether it may be a resource (#672 b).
     pub lam_domains: HashMap<usize, (Val, usize)>,
     /// A variable whose type may be a resource but, in an arm of a `match`
-    /// on a variable, is refined to one that holds none (D173): the
+    /// on a variable, is refined to one that holds none (#664): the
     /// function, the matched variable's level, the arm's constructor and
     /// the variable's level. The usage check lets it go unused there.
     /// Ordered, so that an arm's variables are found without going through
     /// every variable in scope.
     pub moot_in_arm: BTreeSet<(DefId, usize, ConId, usize)>,
-    /// The stuck `match`es whose arms `case_linear` is looking at: met again,
-    /// a recursive type function adds no resource (D175).
-    pub lin_visiting: std::cell::RefCell<Vec<usize>>,
     /// A `match` arm's resource names, bound as ghosts for its guard: the
     /// guard's span, for E0408.
     pub guard_vars: HashMap<(DefId, String), Span>,
@@ -878,7 +922,7 @@ pub struct Elab {
     pub match_binding: bool,
     /// Exhaustiveness state of the `match` being compiled.
     pub pm: pattern::PatState,
-    /// Classes (D136), by their dictionary's type.
+    /// Classes (#615), by their dictionary's type.
     pub class_defs: HashMap<TyId, classes::ClassDef>,
     /// A class's types (#133): `C.Name`'s definition, by class and name.
     pub assoc_defs: HashMap<(TyId, String), DefId>,
@@ -948,7 +992,7 @@ pub struct Elab {
     pub pending_classes: Vec<(String, Vec<String>, Vec<ast::ClassMember>, Span)>,
     /// A class function's parameters' multiplicities, by `module.Class.function`,
     /// when one is written `own` or `ghost`: its dictionary field takes an `own`
-    /// one exactly once, so generic code can pass it a resource (D156 i), and a
+    /// one exactly once, so generic code can pass it a resource (#643 i), and a
     /// `ghost` one erased.
     pub class_mults: HashMap<String, Vec<Mult>>,
     /// Where an instance's head type stands for its class's parameter, by
@@ -974,7 +1018,7 @@ pub struct Elab {
     /// Functions building an instance's dictionary.
     pub dict_defs: HashSet<DefId>,
     /// Instances' functions: the class's specification is theirs, so they
-    /// go into their dictionary without it (D136).
+    /// go into their dictionary without it (#615).
     pub inst_fns: HashSet<DefId>,
     /// Each instance member's dictionary function.
     pub inst_member_of: HashMap<DefId, DefId>,
@@ -985,21 +1029,21 @@ pub struct Elab {
     /// While a signature's implied clauses are looked for (#385): each
     /// dictionary a type's header asks for where the type is written.
     pub type_dict_reqs: Option<Vec<classes::InstReq>>,
-    /// Inside a named precondition: `forall` is allowed (D137).
+    /// Inside a named precondition: `forall` is allowed (#632).
     pub forall_ok: usize,
-    /// The named preconditions of the function being checked (D137).
+    /// The named preconditions of the function being checked (#632).
     pub cur_hyps: Vec<(String, Val)>,
     /// The span of the name being elaborated (for a dictionary's errors).
     pub name_span: Span,
     /// Text for spans standing for code written in another module (a class's
-    /// signatures in an instance, D136): module, start, end → text.
+    /// signatures in an instance, #615): module, start, end → text.
     pub text_override: HashMap<(String, u32, u32), String>,
     /// Synthetic spans (beyond any file's text, from `SYNTHETIC`), each
     /// standing for the real span it is shown at: module, start → anchor.
     pub synthetic: HashMap<(String, u32), Span>,
-    /// Unknowns in a reported type mismatch (D141 c).
+    /// Unknowns in a reported type mismatch (#627 c).
     pub blamed: HashSet<MetaId>,
-    /// What is known at the cursor, when completing (D142).
+    /// What is known at the cursor, when completing (#626).
     pub completion: Option<complete::CompInfo>,
     /// Completing at this byte of this module: other bodies aren't checked.
     pub completing: Option<(String, u32)>,
@@ -1073,7 +1117,6 @@ impl Elab {
             alias_preds: HashMap::new(),
             bounds: HashMap::new(),
             known_cache: std::cell::RefCell::new(HashMap::new()),
-            known_disk: std::cell::RefCell::new(Default::default()),
             runnable_defs: std::cell::RefCell::new(HashSet::new()),
             early: Default::default(),
             module_proofs: std::cell::RefCell::new(HashMap::new()),
@@ -1112,7 +1155,6 @@ impl Elab {
             binder_spans: HashMap::new(),
             lam_domains: HashMap::new(),
             moot_in_arm: BTreeSet::new(),
-            lin_visiting: std::cell::RefCell::new(Vec::new()),
             guard_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,
@@ -1217,11 +1259,11 @@ impl Elab {
 
     /// A type with type functions at its head computed (`values (Last ?a)`
     /// is `?a`), stopping at an alias, whose name carries facts (`Nat`):
-    /// for the types of variables a pattern or `let` binds (D176).
+    /// for the types of variables a pattern or `let` binds (#662).
     pub fn reduce_type(&self, v: &Val) -> Val {
         let mut v = crate::core::force_meta(&self.g, v.clone());
-        for _ in 0..64 {
-            let Val::Neutral(Head::Def(d), _) = &v else { break };
+        // However many: unfolding ends (see `core::unfold`).
+        while let Val::Neutral(Head::Def(d), _) = &v {
             if self.alias_preds.contains_key(d) {
                 break;
             }
@@ -1330,10 +1372,8 @@ impl Elab {
     pub fn fresh_meta(&mut self, cx: &Cx) -> Tm {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
-        for (lvl, l) in cx.locals.iter().enumerate() {
-            if l.bound {
-                t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
-            }
+        for lvl in cx.bound() {
+            t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
         }
         t
     }
@@ -1343,8 +1383,8 @@ impl Elab {
     pub fn fresh_meta_over_types(&mut self, cx: &Cx) -> Tm {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
-        for (lvl, l) in cx.locals.iter().enumerate() {
-            if l.bound && self.is_type_level(&l.ty) {
+        for lvl in cx.bound() {
+            if self.is_type_level(&cx.locals[lvl].ty) {
                 t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
             }
         }
@@ -1366,7 +1406,7 @@ impl Elab {
     }
 
     /// Record that the unknown `mt` (from `fresh_meta`) stands for the
-    /// implicit parameter `x` of the function `head` is (D141).
+    /// implicit parameter `x` of the function `head` is (#627).
     pub fn name_meta(&mut self, cx: &Cx, mt: &Tm, x: &Name, dom: &Val, head: &Tm) {
         if x.starts_with('$') || x.is_empty() || &**x == "_" {
             return;
@@ -1441,10 +1481,10 @@ impl Elab {
     }
 
     /// `own` on a function type's parameter is implied by the parameter's
-    /// type (D39), decided where the arrow is written: a type still being
+    /// type (#533), decided where the arrow is written: a type still being
     /// computed there (`values s a`) may be a resource, so it is `own`. Once
     /// the type is known not to hold one (`values One Int` is `Int`), `own`
-    /// means nothing: both sides drop it (D172 b).
+    /// means nothing: both sides drop it (#672 b).
     fn moot_own(&self, cx: &Cx, expected: &Val, actual: &Val) -> Option<(Val, Val)> {
         fn go(e: &Elab, t: &Tm, changed: &mut bool) -> Tm {
             match t {
@@ -1471,7 +1511,7 @@ impl Elab {
     }
 
     /// A type known never to hold a resource: no variables or unsolved
-    /// metas left to decide it, and not linear (D172 b).
+    /// metas left to decide it, and not linear (#672 b).
     pub fn never_linear(&self, t: &Tm) -> bool {
         let mut fv = std::collections::BTreeSet::new();
         crate::core::free_vars(t, 0, &mut fv);
@@ -1493,7 +1533,7 @@ impl Elab {
         }
         // The types differ only in `own`: a function taking a resource where
         // the type expected doesn't say its parameter is `own` (an instance
-        // of a class whose function doesn't, at a resource type, D156 i).
+        // of a class whose function doesn't, at a resource type, #643 i).
         if r.is_err() {
             if let Some(relaxed) = self.own_as_many(cx, expected, actual) {
                 if unify(&self.g, cx.lvl(), expected, &relaxed).is_ok() {
@@ -1534,7 +1574,7 @@ impl Elab {
                     return false;
                 }
                 // A mismatch about an unknown already in a reported one
-                // follows from it (D141 c).
+                // follows from it (#627 c).
                 let unknowns = {
                     let mut v = self.unknowns(cx.lvl(), expected);
                     for m in self.unknowns(cx.lvl(), actual) {
@@ -1544,7 +1584,7 @@ impl Elab {
                     }
                     v
                 };
-                if unknowns.iter().any(|m| self.blamed.contains(m)) {
+                if unknowns.iter().any(|m| self.follows_error(m)) {
                     return false;
                 }
                 self.blamed.extend(unknowns.iter().copied());
@@ -1553,17 +1593,22 @@ impl Elab {
                 if let Some(n) = self.unknowns_note(&unknowns, why, &e, &a) {
                     d = d.with_note(n);
                 }
-                // A sealed function in a type never unfolds outside its module (D54).
+                // A sealed function in a type never unfolds outside its module (#537).
                 let mut sealed = Vec::new();
                 for v in [expected, actual] {
                     collect_sealed(&quote(&self.g, cx.lvl(), v), &self.g, &self.cur, &mut sealed);
                 }
-                if let Some(dd) = sealed.first() {
-                    let info = &self.g.defs[dd.0 as usize];
-                    d = d.with_help(format!(
-                        "`{}` is defined in `{}`, where function bodies are sealed: its value isn't visible here unless it is exported `transparent`",
-                        info.name, info.module
-                    ));
+                if let Some(s) = sealed.first() {
+                    let module = &self.g.defs[s.def.0 as usize].module;
+                    d = d.with_help(match self.sealed_subject(&self.cur, s, cx) {
+                        (subject, plural, true) => format!(
+                            "{subject} {} a private function of `{module}`, where function bodies are sealed: its value isn't visible here",
+                            if plural { "use" } else { "uses" }
+                        ),
+                        (subject, _, false) => format!(
+                            "{subject} is defined in `{module}`, where function bodies are sealed: its value isn't visible here unless it is exported `transparent`"
+                        ),
+                    });
                 }
                 self.err(d);
                 false
@@ -1575,6 +1620,18 @@ impl Elab {
 
 impl Elab {
     /// The unknowns in `v` the checker hasn't worked out, in order.
+    /// An unknown that is unknown because of an error already reported: one
+    /// in a reported mismatch, a dictionary not found (#627 c), or one
+    /// compared with an error (an argument that failed to check).
+    pub fn follows_error(&self, m: &MetaId) -> bool {
+        self.blamed.contains(m) || (self.g.errored.borrow().contains(m) && self.reported_error())
+    }
+
+    /// An error has been reported: an error in a term is one of its.
+    pub fn reported_error(&self) -> bool {
+        self.diags.iter().any(|(_, d)| d.severity == crate::diag::Severity::Error)
+    }
+
     pub fn unknowns(&self, lvl: usize, v: &Val) -> Vec<MetaId> {
         fn go(g: &Globals, t: &Tm, lvl: usize, out: &mut Vec<MetaId>) {
             match t {
@@ -1604,7 +1661,7 @@ impl Elab {
         out
     }
 
-    /// What the named unknowns in a message stand for (D141): "`?f` is
+    /// What the named unknowns in a message stand for (#627): "`?f` is
     /// `doubled`'s type parameter `f`, a type constructor like `List`", and
     /// why `?f x` can't be the other type.
     fn unknowns_note(&self, unknowns: &[MetaId], why: crate::core::UnifyError, e: &str, a: &str) -> Option<String> {
@@ -1704,23 +1761,49 @@ impl Lin {
     }
 }
 
+/// What `val_linear` is inside: a type whose field's type is computed, or
+/// a stuck `match` (by its address), innermost first.
+#[derive(Clone, Copy, PartialEq)]
+enum LinStep {
+    Ty(TyId),
+    Case(usize),
+}
+
+struct LinPath {
+    step: LinStep,
+    up: Option<Rc<LinPath>>,
+}
+
+impl LinPath {
+    fn has(p: &Option<Rc<LinPath>>, step: LinStep) -> bool {
+        let mut p = p.as_deref();
+        while let Some(q) = p {
+            if q.step == step {
+                return true;
+            }
+            p = q.up.as_deref();
+        }
+        false
+    }
+}
+
 impl Elab {
-    /// A primitive resource (D39): implemented by the runtime as an open, stateful thing.
+    /// A primitive resource (#533): implemented by the runtime as an open, stateful thing.
     fn is_primitive_resource(&self, t: TyId) -> bool {
         let ti = &self.g.tys[t.0 as usize];
         matches!((&*ti.module, &*ti.name), ("std.files", "File") | ("std.proc", "Child"))
     }
 
-    /// A cown owns its contents; its handle may be shared (D39), and it can't
-    /// hold a resource (D156 k). A future of a resource is a resource, joined
-    /// exactly once (D156 l).
+    /// A cown owns its contents; its handle may be shared (#533), and it can't
+    /// hold a resource (#643 k). A future of a resource is a resource, joined
+    /// exactly once (#643 l).
     fn is_owner(&self, t: TyId) -> bool {
         Some(t) == self.g.well_known.cown
     }
 
-    /// Is a type declared with a resource in a constructor field (D39)? `Depends`
+    /// Is a type declared with a resource in a constructor field (#533)? `Depends`
     /// when a field's type is computed from the parameters (`pipe_end ss.stdout`,
-    /// D112): then it is a resource for some arguments and not others.
+    /// #611): then it is a resource for some arguments and not others.
     fn ty_lin(&self, t: TyId, visiting: &mut Vec<TyId>) -> Lin {
         if self.is_primitive_resource(t) {
             return Lin::Yes;
@@ -1763,7 +1846,7 @@ impl Elab {
                 Some(v) => Lin::of(self.val_linear(&v)),
                 None => Lin::No,
             },
-            // A type variable: a generic container (D45), decided by its argument.
+            // A type variable: a generic container (#545), decided by its argument.
             Tm::Var(_) | Tm::Pi(..) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => Lin::No,
             // A proposition (a refinement field) or a value: never a resource.
             _ if !self.computes_type(t) => Lin::No,
@@ -1772,7 +1855,7 @@ impl Elab {
                 let mut fv = std::collections::BTreeSet::new();
                 crate::core::free_vars(t, 0, &mut fv);
                 if fv.is_empty() {
-                    self.val_lin(&eval(&self.g, &Rc::new(Vec::new()), t), visiting)
+                    self.val_lin(&eval(&self.g, &crate::core::Env::new(), t), visiting)
                 } else {
                     Lin::Depends
                 }
@@ -1833,49 +1916,108 @@ impl Elab {
     }
 
     /// A computed type: decided by evaluating it, its variables left
-    /// unknown. One that can't be computed may be a resource (D112); one
+    /// unknown. One that can't be computed may be a resource (#611); one
     /// computed by a `match` on an unknown is one if an arm may be
-    /// (`pipe_end s` may be a `File`; `values s Int` is never one, D172 e).
+    /// (`pipe_end s` may be a `File`; `values s Int` is never one, #672 e).
     fn closed_linear(&self, t: &Tm) -> bool {
         let mut fv = std::collections::BTreeSet::new();
         crate::core::free_vars(t, 0, &mut fv);
         let n = fv.iter().next_back().map_or(0, |m| m + 1);
         // Unknowns far above any context, as for fields (`field_lin`).
         let env: Vec<Val> = (0..n).map(|k| Val::var(usize::MAX / 4 + k)).collect();
-        self.val_linear(&eval(&self.g, &Rc::new(env), t))
+        self.val_linear(&eval(&self.g, &crate::core::Env::from(env), t))
     }
 
-    /// Is a value of this type linear (D39)?
+    /// Is a value of this type linear (#533)? However deep the type: a
+    /// worklist. A type holding itself at the same arguments is seen once;
+    /// one whose field's type is computed (`Lin::Depends`) and that holds
+    /// itself at other arguments holds types without end, and is taken as
+    /// a resource.
     pub fn val_linear(&self, v: &Val) -> bool {
-        self.val_linear_at(v, 0)
-    }
-
-    fn val_linear_at(&self, v: &Val, depth: usize) -> bool {
-        if depth > 32 {
-            return true;
-        }
-        match self.force(v) {
-            Val::TyCon(id, args) => {
-                if self.is_owner(id) {
-                    return false;
+        // Types are compared quoted at a level above every variable in
+        // them, the fresh ones included.
+        const KEY: usize = usize::MAX - (1 << 24);
+        let fresh = std::cell::Cell::new(usize::MAX / 2);
+        let fresh = || {
+            let l = fresh.get();
+            fresh.set(l + 1);
+            Val::var(l)
+        };
+        let mut seen: Vec<(TyId, Vec<Tm>)> = Vec::new();
+        let mut work: Vec<(Val, Option<Rc<LinPath>>)> = vec![(v.clone(), None)];
+        while let Some((v, path)) = work.pop() {
+            match self.force(&v) {
+                Val::TyCon(id, args) => {
+                    if self.is_owner(id) {
+                        continue;
+                    }
+                    match self.ty_lin(id, &mut Vec::new()) {
+                        Lin::Yes => return true,
+                        Lin::No => work.extend(args.iter().enumerate().filter(|(k, _)| self.type_param(id, *k)).map(|(_, a)| (a.clone(), path.clone()))),
+                        Lin::Depends => {
+                            let key: Vec<Tm> = args.iter().map(|a| quote(&self.g, KEY, a)).collect();
+                            if seen.iter().any(|(i, k)| *i == id && k.len() == key.len() && k.iter().zip(&key).all(|(a, b)| tm_eq(a, b))) {
+                                continue;
+                            }
+                            if LinPath::has(&path, LinStep::Ty(id)) {
+                                return true;
+                            }
+                            seen.push((id, key));
+                            let inner = Some(Rc::new(LinPath { step: LinStep::Ty(id), up: path }));
+                            // The fields of `id` at these arguments.
+                            for c in &self.g.tys[id.0 as usize].ctors {
+                                let mut env: Vec<Val> = args.to_vec();
+                                for f in self.g.cons[c.0 as usize].fields.iter() {
+                                    if f.1 != Mult::Zero && self.field_lin(&f.3, &mut Vec::new()) != Lin::No {
+                                        work.push((eval(&self.g, &crate::core::Env::from(env.clone()), &f.3), inner.clone()));
+                                    }
+                                    // Earlier fields are unknown here: fresh variables far above any context.
+                                    env.push(fresh());
+                                }
+                            }
+                        }
+                    }
                 }
-                match self.ty_lin(id, &mut Vec::new()) {
-                    Lin::Yes => true,
-                    Lin::No => args.iter().enumerate().any(|(k, a)| self.type_param(id, k) && self.val_linear_at(a, depth + 1)),
-                    Lin::Depends => self.fields_linear(id, &args, depth),
+                Val::TupleTy(ts) => work.extend(ts.iter().map(|a| (a.clone(), path.clone()))),
+                // A type variable is generic (#545); a stuck computation of a type may be a resource.
+                Val::Neutral(Head::Def(d), _) => {
+                    if self.def_gives_type(d) {
+                        return true;
+                    }
                 }
+                // A `match` stuck on an unknown: a resource if an arm may be one (#672 e).
+                Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => match sp.last() {
+                    Some(Elim::Case(c, env)) => {
+                        // A recursive type function meets its own `match`
+                        // again: what it gives there is the same type, a
+                        // resource only if a base arm is (`futures ts`
+                        // recurses through `futures rest`).
+                        let key = &**c as *const CaseTm as usize;
+                        if LinPath::has(&path, LinStep::Case(key)) {
+                            continue;
+                        }
+                        let inner = Some(Rc::new(LinPath { step: LinStep::Case(key), up: path }));
+                        let mut arm = |n: usize, body: &Tm| {
+                            let mut e = env.clone();
+                            e.extend((0..n).map(|_| fresh()));
+                            work.push((eval(&self.g, &e, body), inner.clone()));
+                        };
+                        for (_, n, b) in c.branches.iter() {
+                            arm(*n, b);
+                        }
+                        for (_, b) in c.lits.iter() {
+                            arm(0, b);
+                        }
+                        if let Some(b) = c.default.as_ref() {
+                            arm(0, b);
+                        }
+                    }
+                    _ => return true,
+                },
+                _ => {}
             }
-            Val::TupleTy(ts) => ts.iter().any(|a| self.val_linear_at(a, depth + 1)),
-            // A type variable is generic (D45); a stuck computation of a type may be a resource.
-            Val::Neutral(Head::Def(d), _) => self.def_gives_type(d),
-            // A `match` stuck on an unknown: a resource if an arm may be one (D172 e).
-            Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => match sp.last() {
-                Some(Elim::Case(c, env)) => self.case_linear(c, env, depth),
-                _ => true,
-            },
-            Val::Neutral(..) => false,
-            _ => false,
         }
+        false
     }
 
     /// Is parameter `k` of this type a type (`a~Type`, `f~Type -> Type`),
@@ -1893,31 +2035,6 @@ impl Elab {
     }
 
     /// Might an arm of this stuck `match` be a resource type?
-    fn case_linear(&self, c: &CaseTm, env: &Env, depth: usize) -> bool {
-        // A recursive type function meets its own `match` again: what it
-        // gives there is the same type, a resource only if a base arm is
-        // (`futures ts` recurses through `futures rest`).
-        let key = c as *const CaseTm as usize;
-        if self.lin_visiting.borrow().contains(&key) {
-            return false;
-        }
-        self.lin_visiting.borrow_mut().push(key);
-        let r = self.case_arms_linear(c, env, depth);
-        self.lin_visiting.borrow_mut().pop();
-        r
-    }
-
-    fn case_arms_linear(&self, c: &CaseTm, env: &Env, depth: usize) -> bool {
-        let arm = |n: usize, body: &Tm| {
-            let mut e = (**env).clone();
-            e.extend((0..n).map(|k| Val::var(usize::MAX / 2 + depth * 64 + k)));
-            self.val_linear_at(&eval(&self.g, &Rc::new(e), body), depth + 1)
-        };
-        c.branches.iter().any(|(_, n, b)| arm(*n, b))
-            || c.lits.iter().any(|(_, b)| arm(0, b))
-            || c.default.as_ref().is_some_and(|b| arm(0, b))
-    }
-
     pub fn type_linear(&self, t: &Tm) -> bool {
         self.tm_linear(t, &mut Vec::new())
     }
@@ -1943,24 +2060,107 @@ impl Elab {
         matches!(t, Tm::Univ(_))
     }
 
-    /// The fields of `id` at these arguments: is any a resource?
-    fn fields_linear(&self, id: TyId, args: &[Val], depth: usize) -> bool {
-        let ti = &self.g.tys[id.0 as usize];
-        for c in &ti.ctors {
-            let mut env: Vec<Val> = args.to_vec();
-            for (k, f) in self.g.cons[c.0 as usize].fields.iter().enumerate() {
-                let ty = eval(&self.g, &Rc::new(env.clone()), &f.3);
-                if f.1 != Mult::Zero && self.field_lin(&f.3, &mut Vec::new()) != Lin::No && self.val_linear_at(&ty, depth + 1) {
-                    return true;
+    /// Could a value of this type hold a value that must be used exactly
+    /// once: a resource, or a closure, which may be one that uses a resource
+    /// (§8.4)? A type variable or a type not yet computed could.
+    pub fn may_hold_once(&self, v: &Val) -> bool {
+        self.val_linear(v) || self.val_holds_fn(v)
+    }
+
+    /// A type written with free variables, evaluated with each unknown.
+    pub fn eval_open(&self, t: &Tm) -> Val {
+        let mut fv = std::collections::BTreeSet::new();
+        crate::core::free_vars(t, 0, &mut fv);
+        let n = fv.iter().next_back().map_or(0, |m| m + 1);
+        let env: Vec<Val> = (0..n).map(|k| Val::var(usize::MAX / 4 + k)).collect();
+        eval(&self.g, &crate::core::Env::from(env), t)
+    }
+
+    /// Could a value of this type hold a function? However deep: a
+    /// worklist over the type's arguments.
+    fn val_holds_fn(&self, v: &Val) -> bool {
+        let mut work = vec![v.clone()];
+        while let Some(v) = work.pop() {
+            match self.force(&v) {
+                Val::Pi(..) => return true,
+                Val::TyCon(id, args) => {
+                    if self.is_owner(id) {
+                        continue;
+                    }
+                    if self.ty_holds_fn(id, &mut Vec::new()) {
+                        return true;
+                    }
+                    work.extend(args.iter().enumerate().filter(|(k, _)| self.type_param(id, *k)).map(|(_, a)| a.clone()));
                 }
-                // Earlier fields are unknown here: fresh variables far above any context.
-                env.push(Val::var(usize::MAX / 2 + k));
+                Val::TupleTy(ts) => work.extend(ts.iter().cloned()),
+                // A type variable, or a type not computed yet.
+                Val::Neutral(Head::Var(_) | Head::Meta(_), _) => return true,
+                Val::Neutral(Head::Def(d), _) => {
+                    if self.def_gives_type(d) {
+                        return true;
+                    }
+                }
+                Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => return true,
+                _ => {}
             }
         }
         false
     }
 
-    /// A binder's name, recorded with where it is bound (D172 d).
+    /// Does a field of `id`, whatever its arguments, hold a function?
+    fn ty_holds_fn(&self, id: TyId, visiting: &mut Vec<TyId>) -> bool {
+        if self.is_owner(id) || visiting.contains(&id) {
+            return false;
+        }
+        visiting.push(id);
+        let r = self.g.tys[id.0 as usize]
+            .ctors
+            .iter()
+            .flat_map(|c| self.g.cons[c.0 as usize].fields.iter())
+            .any(|f| f.1 != Mult::Zero && self.field_holds_fn(&f.3, visiting));
+        visiting.pop();
+        r
+    }
+
+    /// A field's type, in the context of the parameters and earlier fields:
+    /// a parameter is decided by its argument.
+    fn field_holds_fn(&self, t: &Tm, visiting: &mut Vec<TyId>) -> bool {
+        if let Some((id, args)) = tycon_app(t) {
+            return !self.is_owner(id) && (self.ty_holds_fn(id, visiting) || args.iter().any(|a| self.field_holds_fn(a, visiting)));
+        }
+        match t {
+            Tm::Pi(..) => true,
+            Tm::TupleTy(ts) => ts.iter().any(|a| self.field_holds_fn(a, visiting)),
+            Tm::Meta(m) => self.g.meta(*m).is_none_or(|v| self.val_holds_fn(&v)),
+            Tm::Var(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => false,
+            _ if !self.computes_type(t) => false,
+            // Computed: known if closed, else it may be anything.
+            _ => {
+                let mut fv = std::collections::BTreeSet::new();
+                crate::core::free_vars(t, 0, &mut fv);
+                !fv.is_empty() || self.val_holds_fn(&eval(&self.g, &crate::core::Env::new(), t))
+            }
+        }
+    }
+
+    /// The types of a constructor's fields, given the arguments of its type
+    /// (unknown where `args` is `None`): earlier fields are unknown.
+    pub fn con_field_types(&self, cid: ConId, args: Option<&[Val]>) -> Vec<(Mult, Val)> {
+        let ci = &self.g.cons[cid.0 as usize];
+        let np = self.g.arity_ty(ci.ty);
+        let mut env: Vec<Val> = match args {
+            Some(a) => a.to_vec(),
+            None => (0..np).map(|k| Val::var(usize::MAX / 4 + k)).collect(),
+        };
+        let mut out = Vec::new();
+        for (k, f) in ci.fields.iter().enumerate() {
+            out.push((f.1, eval(&self.g, &crate::core::Env::from(env.clone()), &f.3)));
+            env.push(Val::var(usize::MAX / 2 + k));
+        }
+        out
+    }
+
+    /// A binder's name, recorded with where it is bound (#672 d).
     pub fn binder_name(&mut self, name: &str, span: Span) -> Name {
         let n: Name = Rc::from(name);
         self.binder_spans.insert(Rc::as_ptr(&n) as *const u8 as usize, (n.clone(), span));
@@ -1968,7 +2168,7 @@ impl Elab {
     }
 
     /// `own` on this lambda parameter is moot: its type, now known, holds
-    /// no resource (D172 b).
+    /// no resource (#672 b).
     pub fn lam_own_moot(&self, name: &Name) -> bool {
         self.lam_domains
             .get(&(Rc::as_ptr(name) as *const u8 as usize))
@@ -1988,7 +2188,7 @@ impl Elab {
         self.binder_spans.get(&(Rc::as_ptr(name) as *const u8 as usize)).map(|(_, s)| *s)
     }
 
-    /// The multiplicity for a variable the program names: linear types make it `own` (D39).
+    /// The multiplicity for a variable the program names: linear types make it `own` (#533).
     pub fn named_mult(&mut self, cx: &Cx, name: &str, ty: &Val, span: Span, declared: Mult) -> Mult {
         if let Some(f) = self.cur_fn {
             self.local_spans.insert((f, name.to_string()), span);
@@ -2018,7 +2218,7 @@ impl Elab {
         }
     }
 
-    /// D45: `own` belongs on generic parameters and functions. On a linear
+    /// #545: `own` belongs on generic parameters and functions. On a linear
     /// type it is implied (W010); on a type without type variables that isn't
     /// a function it means nothing useful (E0358).
     pub fn check_own(&mut self, cx: &Cx, ty: &Tm, span: Span) {
@@ -2038,9 +2238,10 @@ impl Elab {
                     .with_label("this `own` can go")
                     .with_help("remove `own`; a resource is used exactly once anyway"),
             );
-        } else if !matches!(ty, Tm::Pi(..)) && !self.mentions_type_var(cx, ty, 0) {
+        } else if !matches!(ty, Tm::Pi(..)) && !self.mentions_type_var(cx, ty, 0) && !self.may_hold_once(&self.eval(cx, ty)) {
             // A function may be a closure that uses a resource, which is
-            // called exactly once (D171): `f~own (Unit -> a)` takes one.
+            // called exactly once (#658): `f~own (Unit -> a)` takes one, and
+            // `o~own Option (Unit -> a)` one in a value (§8.4).
             let tyv = self.eval(cx, ty);
             let shown = self.show_val(cx, &tyv);
             self.err(
@@ -2067,7 +2268,7 @@ impl Elab {
                     && match self.force(&cx.locals[lvl].ty) {
                         Val::Univ(_) => true,
                         // A value holding types (`ts~Types`): a type computed
-                        // from it is as generic as a type variable (D176).
+                        // from it is as generic as a type variable (#662).
                         Val::TyCon(id, _) => self.holds_types(id),
                         _ => false,
                     }
@@ -2108,7 +2309,7 @@ impl Elab {
     /// Record `facts in cx ⊢ goal`.
     pub fn oblige(&mut self, cx: &Cx, span: Span, kind: ObKind, text: String, goal: Val, only_if_nat: Option<Val>) {
         // In a specification only a callee's precondition is checked: a spec
-        // mustn't speak of a call that can't be made (M17, D118). A
+        // mustn't speak of a call that can't be made (M17). A
         // specification elaborated twice (a lemma's `ensures`) obliges once;
         // each of several conditions at one place is its own obligation.
         if self.in_spec > 0 {
@@ -2121,6 +2322,96 @@ impl Elab {
         }
         let o = self.obligation(cx, span, kind, text, goal, only_if_nat);
         self.obligations.push(o);
+    }
+
+    /// A call in a typing (`r~Box (grow 1 k)`) may rely on every condition
+    /// of the declaration, wherever it is written, except one that depends
+    /// on it (§7.1). Types are elaborated before conditions, so the
+    /// obligations made since `from` get those facts here. `typings`: each
+    /// typing's type, and how many locals were in scope where it was
+    /// elaborated (`None` for a name that isn't the declaration's); `conds`:
+    /// each condition's span, its term over `cx`, and the typing it is a
+    /// refinement of, if any (else it is written on its own, and relies on
+    /// the conditions before it in `conds`).
+    ///
+    /// The conditions whose calls need facts form a graph: a typing's calls
+    /// rely on every other condition, a written condition's on those before
+    /// it. A condition with calls depends on what its calls rely on, so a
+    /// typing's calls may not rely on a condition with calls that reaches
+    /// the typing back, directly or through other conditions.
+    pub fn rely_on_conditions(&mut self, from: usize, typings: &[(Span, Option<usize>)], conds: &[(Span, Tm, Option<usize>)], cx: &Cx) {
+        let total = cx.lvl();
+        let nt = typings.len();
+        let within = |span: Span, at: Span| at.start <= span.start && span.end <= at.end;
+        // Regions: the typings, then the written conditions.
+        let region = |c: usize| conds[c].2.unwrap_or(nt + c);
+        let mut obligations: Vec<Vec<usize>> = vec![Vec::new(); nt + conds.len()];
+        for i in from..self.obligations.len() {
+            let o = &self.obligations[i];
+            if o.module != self.cur {
+                continue;
+            }
+            let at = typings.iter().position(|(ty, _)| within(o.span, *ty)).or_else(|| {
+                (0..conds.len()).find(|&c| conds[c].2.is_none() && within(o.span, conds[c].0)).map(|c| nt + c)
+            });
+            if let Some(r) = at {
+                obligations[r].push(i);
+            }
+        }
+        // The conditions each region's calls rely on.
+        let uses = |r: usize| -> Vec<usize> {
+            if r < nt {
+                (0..conds.len()).filter(|&c| region(c) != r).collect()
+            } else {
+                (0..r - nt).collect()
+            }
+        };
+        let edges: Vec<Vec<usize>> = (0..nt + conds.len())
+            .map(|r| {
+                if obligations[r].is_empty() {
+                    return Vec::new();
+                }
+                let mut out: Vec<usize> = uses(r).into_iter().map(region).filter(|&q| !obligations[q].is_empty()).collect();
+                out.sort_unstable();
+                out.dedup();
+                out
+            })
+            .collect();
+        let reaches = |from: usize, to: usize| {
+            let mut seen = vec![false; edges.len()];
+            let mut stack = vec![from];
+            while let Some(r) = stack.pop() {
+                if r == to {
+                    return true;
+                }
+                if !std::mem::replace(&mut seen[r], true) {
+                    stack.extend(edges[r].iter().copied());
+                }
+            }
+            false
+        };
+        let conds: Vec<(Val, usize, usize)> = conds
+            .iter()
+            .enumerate()
+            .map(|(c, (_, tm, _))| {
+                let mut used = Vec::new();
+                free_levels(tm, total, 0, &mut used);
+                (self.eval(cx, tm), used.iter().max().map_or(0, |l| l + 1), region(c))
+            })
+            .collect();
+        for (t, (_, base)) in typings.iter().enumerate() {
+            let Some(base) = *base else { continue };
+            let facts: Vec<(Val, usize)> = conds
+                .iter()
+                .filter(|(_, needs, r)| *r != t && *needs <= base && (obligations[*r].is_empty() || !reaches(*r, t)))
+                .map(|(v, needs, _)| (self.rep_deep(total, v), *needs))
+                .collect();
+            for &i in &obligations[t] {
+                // Over the locals in scope where the typing was elaborated.
+                let n = self.obligations[i].ctx.len();
+                self.obligations[i].facts.extend(facts.iter().filter(|(_, needs)| *needs <= n).map(|(v, _)| v.clone()));
+            }
+        }
     }
 
     /// `facts in cx ⊢ goal`, not yet recorded.
@@ -2140,7 +2431,7 @@ impl Elab {
         Obligation { module: self.cur.clone(), span, kind, text, ctx, facts, goal, only_if_nat, owner: self.cur_fn, reps: self.rep_pairs() }
     }
 
-    /// Whether branches here are asked about (D144 d): the program's own
+    /// Whether branches here are asked about (#633 d): the program's own
     /// code, outside specifications, written by its author.
     pub fn probing(&self, span: Span) -> bool {
         self.in_spec == 0 && !self.stdlib_mode && self.completing.is_none() && span.start < SYNTHETIC && span.end > span.start
@@ -2180,8 +2471,8 @@ impl Elab {
             free_levels(&quote(&self.g, lvl, v), lvl, 0, &mut out);
             out
         };
-        let earlier: HashSet<usize> = cx.facts[..before.min(cx.facts.len())].iter().flat_map(|(_, v)| levels(v)).collect();
-        let own: Vec<usize> = cx.facts[before.min(cx.facts.len())..].iter().flat_map(|(_, v)| levels(v)).collect();
+        let earlier: HashSet<usize> = cx.facts.iter().take(before).flat_map(|(_, v)| levels(v)).collect();
+        let own: Vec<usize> = cx.facts.iter().skip(before).flat_map(|(_, v)| levels(v)).collect();
         own.iter().any(|l| earlier.contains(l) || cx.locals.get(*l).is_some_and(|x| !x.bound || self.refined_ty(&x.ty)))
     }
 
@@ -2210,7 +2501,7 @@ impl Elab {
     }
 
     /// The postconditions hold of `v`, a value the function returns at `at`.
-    /// D121 (c): `v` is a `Nat` by construction, with no obligation: a
+    /// #609 (c): `v` is a `Nat` by construction, with no obligation: a
     /// non-negative integer known at compile time (§8.9: a literal, a named
     /// constant, `math.pow 2 3`), a `Nat` local, `len`, `+`, `*`, `/` or `%`
     /// of such values, or a `Nat` subtraction (which has its own obligation).
@@ -2232,9 +2523,9 @@ impl Elab {
                 if let Val::Neutral(_, sp) = &v {
                     if let Some(Elim::Case(ct, env)) = sp.last() {
                         let at = |n: usize, body: &crate::core::Tm| {
-                            let mut e = (**env).clone();
+                            let mut e = env.clone();
                             e.extend(std::iter::repeat_n(Val::Error, n));
-                            self.nat_by_closure(cx, &eval(&self.g, &Rc::new(e), body))
+                            self.nat_by_closure(cx, &eval(&self.g, &e, body))
                         };
                         if ct.branches.iter().all(|(_, n, b)| at(*n, b))
                             && ct.lits.iter().all(|(_, b)| at(0, b))
@@ -2252,7 +2543,7 @@ impl Elab {
                         // Only a type that mentions no parameter or earlier field.
                         let mut free = std::collections::BTreeSet::new();
                         crate::core::free_vars(fty, 0, &mut free);
-                        if free.is_empty() && crate::core::is_nat(&self.g, &eval(&self.g, &Rc::new(vec![Val::Error; np + i]), fty)) {
+                        if free.is_empty() && crate::core::is_nat(&self.g, &eval(&self.g, &crate::core::Env::from(vec![Val::Error; np + i]), fty)) {
                             return true;
                         }
                     }
@@ -2265,7 +2556,7 @@ impl Elab {
                     // only where its own hold (the prover knows so much).
                     Val::Neutral(Head::Def(d), _) if self.class_methods.contains(d) && self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| !p.is_post)) => false,
                     Val::Neutral(Head::Def(d), sp) => {
-                        let ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
+                        let ty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty);
                         self.returns_nat(&ty, sp)
                     }
                     Val::Neutral(Head::Var(l), sp) => cx.locals.get(*l).is_some_and(|x| self.returns_nat(&x.ty, sp)),
@@ -2298,7 +2589,7 @@ impl Elab {
     }
 
     /// A predicate that only says "is a `Nat`" of a value that is one by
-    /// construction (D121 c) needs no obligation.
+    /// construction (#609 c) needs no obligation.
     pub fn nat_pred_holds(&self, cx: &Cx, p: &Pred, v: &Val) -> bool {
         matches!(p.alias, Some((_, d)) if Some(d) == self.g.well_known.nat) && self.nat_by_closure(cx, v)
     }
@@ -2308,7 +2599,7 @@ impl Elab {
     }
 
     /// The same, knowing the returned value's type: one already a `Nat`
-    /// meets a `Nat` result (D121).
+    /// meets a `Nat` result (#609).
     pub fn oblige_posts_typed(&mut self, cx: &Cx, v: Val, at: Span, ty: Option<&Val>) {
         let Some(pt) = self.post_target.clone() else { return };
         let mut env = pt.binders.clone();
@@ -2326,7 +2617,7 @@ impl Elab {
         for inv in &pt.invariants {
             let subject = match (inv.proj, &v) {
                 (None, _) => v.clone(),
-                (Some((k, last)), _) => eval(&self.g, &Rc::new(vec![v.clone()]), &Tm::Proj(Rc::new(Tm::Var(0)), k, last)),
+                (Some((k, last)), _) => eval(&self.g, &crate::core::Env::from(vec![v.clone()]), &Tm::Proj(Rc::new(Tm::Var(0)), k, last)),
             };
             let mut env = inv.args.clone();
             env.push(subject);
@@ -2384,12 +2675,12 @@ impl Elab {
     }
 
     /// If `ty`, a type term over the first `at` locals of `cx`, is a refinement
-    /// alias (`U8`), its predicates about `subject` (D6, §7.1).
+    /// alias (`U8`), its predicates about `subject` (#500, §7.1).
     pub fn alias_facts(&self, cx: &Cx, at: usize, ty: &Tm, subject: Val) -> Vec<(Val, String, DefId)> {
         let (h, args) = ty.spine();
         let Tm::Def(d) = h else { return Vec::new() };
         let Some(preds) = self.alias_preds.get(d) else { return Vec::new() };
-        let prefix = Rc::new(cx.env[..at].to_vec());
+        let prefix = cx.env.prefix(at);
         let mut env: Vec<Val> = args.iter().map(|a| eval(&self.g, &prefix, a)).collect();
         // The predicates as written, in this use's names: `n <= hi` of
         // `type Bounded lo hi = n~Int, …` is `b <= 10` for `b~Bounded 0 10`.
@@ -2427,7 +2718,7 @@ impl Elab {
 
     /// Instantiate a predicate over `binders ++ [result]` with values.
     pub fn inst_pred(&self, p: &Pred, env: Vec<Val>) -> Val {
-        eval(&self.g, &Rc::new(env), &p.tm)
+        eval(&self.g, &crate::core::Env::from(env), &p.tm)
     }
 
     /// Is local `l` known at compile time (§8.9)? A `comptime` parameter or
@@ -2489,25 +2780,25 @@ impl Elab {
         }
     }
 
-    /// `Nat`, the prelude's refinement of `Int` (D121).
+    /// `Nat`, the prelude's refinement of `Int` (#609).
     pub fn nat(&self) -> Val {
         match self.g.well_known.nat {
-            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(d)),
+            Some(d) => eval(&self.g, &crate::core::Env::new(), &Tm::Def(d)),
             None => self.int(),
         }
     }
-    /// The prelude's `Char` (a refinement of `Nat`), the type of `c'…'` (D19).
+    /// The prelude's `Char` (a refinement of `Nat`), the type of `c'…'` (#509).
     pub fn char_ty(&self) -> Val {
         self.prelude_alias("Char")
     }
-    /// The prelude's `U8`, the type of `'x'` (D19).
+    /// The prelude's `U8`, the type of `'x'` (#509).
     pub fn u8_ty(&self) -> Val {
         self.prelude_alias("U8")
     }
     fn prelude_alias(&self, name: &str) -> Val {
         let d = self.g.defs.iter().position(|i| i.module.as_ref() == "std.prelude" && i.name.as_ref() == name);
         match d {
-            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(DefId(d as u32))),
+            Some(d) => eval(&self.g, &crate::core::Env::new(), &Tm::Def(DefId(d as u32))),
             None => self.int(),
         }
     }
@@ -2520,10 +2811,10 @@ impl Elab {
     pub fn string(&self) -> Val {
         self.ty_val(self.g.well_known.string, vec![])
     }
-    /// `Bytes`, the alias of `Array U8` (D133).
+    /// `Bytes`, the alias of `Array U8` (#624).
     pub fn bytes(&self) -> Val {
         match self.g.well_known.bytes {
-            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(d)),
+            Some(d) => eval(&self.g, &crate::core::Env::new(), &Tm::Def(d)),
             None => Val::Error,
         }
     }
@@ -2535,14 +2826,14 @@ impl Elab {
     }
 
     /// The module of an abstract type declared in another module: its
-    /// constructors and fields are private there (§6, D155).
+    /// constructors and fields are private there (§6, #637).
     pub fn sealed_from(&self, t: TyId) -> Option<String> {
         let ti = &self.g.tys[t.0 as usize];
         (ti.is_abstract && *ti.module != *self.cur).then(|| ti.module.to_string())
     }
 
     /// E0247: a type's constructors or fields used outside its module, which
-    /// exports it as abstract (D155).
+    /// exports it as abstract (#637).
     pub fn sealed_error(&self, t: TyId, what: &str, span: Span) -> Diagnostic {
         let ti = &self.g.tys[t.0 as usize];
         let m = ti.module.to_string();
@@ -2565,7 +2856,7 @@ impl Elab {
     /// be a function or `Unit`, so this only sharpens error messages.
     pub fn default_if_numeric(&mut self, ty: &Val) -> bool {
         let Val::Neutral(Head::Meta(m), _) = self.force(ty) else { return false };
-        // The result of arithmetic (D134): settle its operands' type first.
+        // The result of arithmetic: settle its operands' type first.
         let pos = self.arith_results.iter().position(|a| matches!(self.force(&a.result), Val::Neutral(Head::Meta(m2), _) if m2 == m));
         if let Some(pos) = pos {
             let a = self.arith_results.remove(pos);
@@ -2591,7 +2882,7 @@ impl Elab {
         }
     }
 
-    /// The type of `+ - * / %` on operands of type `ty` (D134): `Nat` for
+    /// The type of `+ - * / %` on operands of type `ty`: `Nat` for
     /// `Nat` and its refinements, `Int` for any other number type.
     pub fn arith_base(&self, ty: &Val) -> Val {
         if crate::core::is_nat(&self.g, ty) {
@@ -2604,7 +2895,7 @@ impl Elab {
     }
 
     /// The type of `lt op rt` on operands of type `ty`, now or, if `ty`
-    /// isn't known yet, once it is (D134, D135).
+    /// isn't known yet, once it is (#616).
     #[allow(clippy::too_many_arguments)]
     pub fn arith_result(&mut self, cx: &Cx, op: Prim, lt: &Tm, rt: &Tm, ty: &Val, lty: &Val, rty: &Val) -> Val {
         let (lc, rc) = (self.known_int(cx, lt), self.known_int(cx, rt));
@@ -2761,7 +3052,7 @@ impl Default for Elab {
     }
 }
 
-/// Where module `name`'s program is (D53): `dir`, the directory of its file,
+/// Where module `name`'s program is (#548): `dir`, the directory of its file,
 /// or the directory its name is relative to when `dir` ends with the name's
 /// leading parts (`tools/ck`, of `ck.syntax`, is in `tools`), so that its
 /// imports of the program's modules resolve when it is checked by itself.
@@ -2784,7 +3075,7 @@ pub fn check_module(name_hint: &str, file: &SourceFile, m: &ast::Module, dir: Op
     check_module_at(name_hint, file, m, dir, None)
 }
 
-/// `check_module`; completing at byte `at` (D142), only the body there is
+/// `check_module`; completing at byte `at` (#626), only the body there is
 /// checked, and other modules' signatures.
 pub fn check_module_at(name_hint: &str, file: &SourceFile, m: &ast::Module, dir: Option<&std::path::Path>, at: Option<u32>) -> Elab {
     let mut e = Elab::new();
@@ -2795,7 +3086,7 @@ pub fn check_module_at(name_hint: &str, file: &SourceFile, m: &ast::Module, dir:
     let name = m.name.as_ref().map(|q| q.dotted()).unwrap_or_else(|| name_hint.to_string());
     e.base_dir = dir.map(|d| program_root(d, &name));
     // A standard-library file, checked by itself, is the standard library
-    // (D145); it may be one of the core modules loaded next, so it is
+    // (#629); it may be one of the core modules loaded next, so it is
     // indexed from the start.
     let is_std = stdlib::is_std_file(&name, std::path::Path::new(&file.name));
     e.root = Some(name.clone());
@@ -2816,7 +3107,7 @@ pub fn check_module_at(name_hint: &str, file: &SourceFile, m: &ast::Module, dir:
 }
 
 impl Elab {
-    /// Check as far as possible past errors (D122): set aside the obligations
+    /// Check as far as possible past errors (#599): set aside the obligations
     /// and `check`s of declarations with errors, and those that mention a
     /// definition or type with errors (or one that uses such, transitively).
     /// `extra` adds errors not in `diags`: the checked file's syntax errors.
@@ -2908,7 +3199,7 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
         Tm::ConApp(c, v) => con(c) || v.iter().any(go),
         Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(go),
         // A branch that is only `Error` is a case the `match` leaves out
-        // (D144 e), not a type error: those are reported where they are.
+        // (#633 e), not a type error: those are reported where they are.
         Tm::Case(s, c) => {
             let arm = |b: &Tm| !matches!(b, Tm::Error) && go(b);
             go(s)
@@ -2919,18 +3210,34 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
     }
 }
 
-/// Definitions sealed by another module (D54) that occur in `t`.
-pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>) {
-    sealed_in(t, g, cur, out, &mut Vec::new());
+/// A function sealed by another module (#537) that a term depends on, and
+/// what the term calls to reach it (§6 rule 9): the function itself
+/// (`None`), or the outermost class's function at a known instance whose
+/// `transparent` instance function's body it is in.
+pub struct Sealed {
+    pub def: DefId,
+    pub via: Option<Tm>,
 }
 
-/// `collect_sealed`, with the transparent instance functions whose bodies
-/// were looked into (each once).
-fn sealed_in(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>, seen: &mut Vec<DefId>) {
+/// The functions sealed by another module (#537) that `t` depends on: in
+/// `t`, and in the bodies of the `transparent` instance functions of other
+/// modules it calls (a class's function at a known instance), each once.
+pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<Sealed>) {
+    sealed_in(t, g, cur, None, out, &mut Vec::new());
+}
+
+/// `collect_sealed` under `via`, with the transparent instance functions
+/// whose bodies were looked into.
+fn sealed_in(t: &Tm, g: &Globals, cur: &str, via: Option<&Tm>, out: &mut Vec<Sealed>, seen: &mut Vec<DefId>) {
+    let push = |d: DefId, out: &mut Vec<Sealed>| {
+        if !out.iter().any(|s| s.def == d) {
+            out.push(Sealed { def: d, via: via.cloned() });
+        }
+    };
     if let Tm::Def(d) = t {
         let info = &g.defs[d.0 as usize];
-        if info.sealed && *info.module != *cur && !out.contains(d) {
-            out.push(*d);
+        if info.sealed && *info.module != *cur {
+            push(*d, out);
         }
     }
     // A class's function at a known instance is that instance's function,
@@ -2939,23 +3246,23 @@ fn sealed_in(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>, seen: &mut Ve
         if let Some(direct) = crate::native::ir::known_instance(g, t) {
             if let (Tm::Def(f), _) = direct.spine() {
                 let info = &g.defs[f.0 as usize];
-                if info.sealed && *info.module != *cur && !out.contains(f) {
-                    out.push(*f);
+                if info.sealed && *info.module != *cur {
+                    push(*f, out);
                 } else if !info.sealed && *info.module != *cur {
                     // A `transparent` one's body: what it calls of its
-                    // module may be sealed (#246).
+                    // module may be sealed (#246), reached through this call.
                     if let (Some(b), false) = (&info.body, seen.contains(f)) {
                         seen.push(*f);
-                        sealed_in(b, g, cur, out, seen);
+                        sealed_in(b, g, cur, Some(via.unwrap_or(t)), out, seen);
                     }
                 }
             }
         }
     }
-    t.each_sub(|x, _| sealed_in(x, g, cur, out, seen));
+    t.each_sub(|x, _| sealed_in(x, g, cur, via, out, seen));
 }
 
-/// The levels of the locals `t` mentions (for termination, D150).
+/// The levels of the locals `t` mentions (for termination, #641).
 pub(super) fn free_levels_pub(t: &Tm, lvl: usize, depth: usize, out: &mut Vec<usize>) {
     free_levels(t, lvl, depth, out)
 }

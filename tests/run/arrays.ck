@@ -1,4 +1,4 @@
-# Arrays (D133): each packed width, values at its edges; generic code
+# Arrays (#624): each packed width, values at its edges; generic code
 # creating arrays of `U8` (packed, so printed as bytes); `set` in place and
 # on a shared array; an `Array U8` used as an `Array U32`.
 module arrays
@@ -13,7 +13,7 @@ fn show xs term -> r : xs~Array a, term~Term, r~Unit
     terminal.print_line (debug (array.to_list xs) ++ " as " ++ debug xs) term
 
 # Generic: the element type is a parameter, so its layout comes from the
-# caller (D133).
+# caller (#624).
 fn twice xs -> r : xs~Array a, r~Array a
     xs ++ array.from_list (array.to_list xs)
 
@@ -82,7 +82,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     show (array.map (\x -> x + 1) i8) t
     show (twos i8) t
     show (bytes_upto 4) t
-    # A range's layout (D135 d): `x % 16` is in `0 … 15`, so bytes.
+    # A range's layout (#616 d): `x % 16` is in `0 … 15`, so bytes.
     show (array.map (\x -> x % 16) u32) t
     show (negated u16) t
     let shared = array.from_list [1, 2, 3]

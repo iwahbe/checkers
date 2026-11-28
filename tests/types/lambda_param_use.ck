@@ -1,7 +1,7 @@
 module lambda_param_use
 
 # A closure's parameter that must be used once is reported where the
-# closure binds it, even when two closures use the same name (D172 d).
+# closure binds it, even when two closures use the same name (#672 d).
 
 import std.files (File)
 
