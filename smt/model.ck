@@ -4428,3 +4428,83 @@ lemma index_indexed c m i j : c~Context, m~Model, i~Sort, j~Value, of_sort c m i
                     UpTo k -> if k < LISTED then have elements_has 0 (k + 1) n else auto
                     _      -> auto
             _                        -> auto
+
+# Two different canonical store lists over one base read differently at
+# one of their indices, and `first_difference` finds such an index.
+
+lemma first_difference_finds sa sb base is j : sa~List (Value, Value), sb~List (Value, Value), base~Value, is~List Value,
+                                               j~Value, list.contains is j,
+                                               read_stores_at sa base j != read_stores_at sb base j
+    ensures read_stores_at sa base (first_difference sa sb base is) != read_stores_at sb base (first_difference sa sb base is)
+    proof
+        match is
+            []        -> auto
+            k :: rest ->
+                if read_stores_at sa base k != read_stores_at sb base k
+                    auto
+                else
+                    have first_difference_finds sa sb base rest j
+
+lemma after_absent_store j k st base : j~Value, k~Value, st~List (Value, Value), base~Value, all_after k st, before j k
+    ensures read_stores_at st base j == base
+    proof
+        match st
+            []             -> auto
+            (l, _) :: rest ->
+                have before_transitive j k l
+                have before_irreflexive j
+                have after_absent_store j k rest base
+
+# An index where `sa` and `sb` read differently, if they differ.
+fn diff_key sa sb -> d : sa~List (Value, Value), sb~List (Value, Value), d~Value
+    match (sa, sb)
+        ((j, x) :: ra, (k, y) :: rb) ->
+            if j == k
+                if x != y then j else diff_key ra rb
+            else if before j k
+                j
+            else
+                k
+        ((j, _) :: _, [])            -> j
+        ([], (k, _) :: _)            -> k
+        ([], [])                     -> Truth False
+
+lemma after_has_not j st d : j~Value, st~List (Value, Value), d~Value, all_after j st, list.contains (list.keys st) d
+    ensures d != j
+    proof
+        match st
+            []             -> auto
+            (k, _) :: rest ->
+                have before_irreflexive j
+                if k == d then auto else have after_has_not j rest d
+
+lemma diff_key_differs sa sb base : sa~List (Value, Value), sb~List (Value, Value), base~Value,
+                                    sorted_stores sa, sorted_stores sb, no_store_of base sa, no_store_of base sb, sa != sb
+    ensures read_stores_at sa base (diff_key sa sb) != read_stores_at sb base (diff_key sa sb)
+        and list.contains (list.keys sa ++ list.keys sb) (diff_key sa sb)
+    proof
+        match (sa, sb)
+            ((j, x) :: ra, (k, y) :: rb) ->
+                have sorted_tail j x ra
+                have sorted_tail k y rb
+                have sorted_all_after j x ra
+                have sorted_all_after k y rb
+                have before_irreflexive j
+                if j == k
+                    if x != y
+                        auto
+                    else
+                        let d = diff_key ra rb
+                        have diff_key_differs ra rb base
+                        have list.contains_append (list.keys ra) (list.keys rb) d
+                        have list.contains_append (list.keys sa) (list.keys sb) d
+                        if list.contains (list.keys ra) d then have after_has_not j ra d else have after_has_not k rb d
+                else if before j k
+                    have after_absent_store j k rb base
+                    have list.contains_append (list.keys sa) (list.keys sb) j
+                else
+                    have before_total j k
+                    have after_absent_store k j ra base
+                    have list.contains_append (list.keys sa) (list.keys sb) k
+            ((j, _) :: _, [])            -> have list.contains_append (list.keys sa) (list.keys sb) j
+            ([], (k, _) :: _)            -> have list.contains_append (list.keys sa) (list.keys sb) k
