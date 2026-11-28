@@ -95,3 +95,5 @@ check model.holds_all (context AND) BOTH (term.facts (context AND))
 check list.all (\t -> model.has_value (context AND) BOTH t) (cert.terms (context AND) (goal AND) (Refutation GOOD))
 check term.axioms (context AND) == [] and term.defs (context AND) == []
 check model.holds (context AND) BOTH (goal AND)
+# A goal that isn't a closed `Bool` term is never refuted.
+check not (cert.checks (context AND) (App (Num 1) []) (Refutation GOOD))
