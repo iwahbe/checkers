@@ -407,6 +407,12 @@ pub struct Globals {
     /// known. Neither the type checker, staging nor folding computes a call
     /// of one.
     pub run_time_only: RefCell<std::collections::HashSet<DefId>>,
+    /// The definitions private to another package than the program's (§6
+    /// rule 9), which no runtime error names: native code reports one in
+    /// such a function's code as in the function the program can refer to
+    /// that led to it (`native::spec::report`). Set once the program is
+    /// checked (`Elab::hide_private`); empty before.
+    pub hidden: RefCell<std::collections::HashSet<DefId>>,
     /// Every obligation of the program is proved, and none of its facts is
     /// assumed by an `admit` (§13.3): native code compiled from here relies
     /// on the proofs, with no run-time checks of guarded operations. False
@@ -507,6 +513,7 @@ impl Globals {
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
             run_time_only: RefCell::new(std::collections::HashSet::new()),
+            hidden: RefCell::new(std::collections::HashSet::new()),
             ids: RefCell::new(Env::new()),
             proved: false,
             fold_work: std::cell::Cell::new(None),

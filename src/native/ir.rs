@@ -213,7 +213,7 @@ impl<'g> Compiler<'g> {
             // A constant known at compile time is its value (§8.9).
             Tm::Def(d) => match crate::core::known_const(self.g, *d) {
                 Some(v) => self.go(&v),
-                None => Ir::Global(*d),
+                None => Ir::Global(self.reported(*d)),
             },
             // A constructor stored as its one kept field (#170), used as a
             // function: it returns that argument.
@@ -254,14 +254,31 @@ impl<'g> Compiler<'g> {
                 // Code of another definition applied (a lambda's body put
                 // into a copy, `spec`): the arguments, then that code.
                 if let Some((o, inner)) = super::spec::marked(h) {
+                    // A definition's function (one no runtime error names,
+                    // passed from code of `o`): its arguments that run
+                    // bound in order, then the call compiled as code of
+                    // `o`, so it is `o`'s copy (`spec::report`) and its
+                    // erased arguments are what the call needs (#170).
+                    if let Tm::Def(_) = inner {
+                        let r = spine.iter().filter(|(_, m)| *m != Mult::Zero).count();
+                        let mut j = 0;
+                        let call = spine.iter().fold(inner.clone(), |c, (a, m)| {
+                            let a = if *m == Mult::Zero {
+                                crate::core::rename_free(a, 0, &|v| v + r)
+                            } else {
+                                j += 1;
+                                Tm::Var(r - j)
+                            };
+                            Tm::App(Rc::new(c), Rc::new(a), Icit::Expl, *m)
+                        });
+                        let body = Ir::At(o, self.at(o).under(r).compile(&call));
+                        return bind_in_order(spine.iter().filter(|(_, m)| *m != Mult::Zero).map(|(a, _)| self.go(a)).collect(), body);
+                    }
                     let n = spine.len();
                     let inner = self.at(o).go(&crate::core::rename_free(inner, 0, &|v| v - 1));
                     let call = Ir::Call(Arc::new(shift(&inner, n, 0)), (0..n).rev().map(|i| Arc::new(Ir::Var(i))).collect());
-                    // Argument `k` is computed under the `let`s of those before it.
-                    return spine.iter().enumerate().rev().fold(Ir::At(o, Arc::new(call)), |b, (k, (a, m))| {
-                        let v = if *m == Mult::Zero { self.erased(a) } else { self.go(a) };
-                        Ir::Let(Arc::new(shift(&v, k, 0)), Arc::new(b))
-                    });
+                    let args = spine.iter().map(|(a, m)| if *m == Mult::Zero { self.erased(a) } else { self.go(a) }).collect();
+                    return bind_in_order(args, Ir::At(o, Arc::new(call)));
                 }
                 // A lambda applied (an instance's function as its dictionary
                 // has it, at a known instance): `let`s, in order, as the
@@ -430,6 +447,16 @@ impl<'g> Compiler<'g> {
                 _ => Ir::Case(self.compile(s), Arc::new(self.case(c))),
             },
             Tm::Error => Ir::Fail(FAIL_MATCH),
+        }
+    }
+
+    /// The function to call for definition `d` here: its copy whose
+    /// runtime errors name this code's owner, if no runtime error names `d`
+    /// (`spec::report`).
+    fn reported(&self, d: DefId) -> DefId {
+        match self.spec {
+            Some(cx) => super::spec::report(self.g, cx, self.owner, d),
+            None => d,
         }
     }
 
@@ -657,6 +684,13 @@ fn subst(t: &Tm, args: &[Tm], depth: usize) -> Tm {
 
 
 /// Shift the free de Bruijn indices of `ir` from `cutoff` on up by `k`.
+/// `body` under a `let` for each of `args`, the first outermost: argument
+/// `k`, code of the scope outside them all, is computed under the `let`s of
+/// those before it, so its variables move past them.
+fn bind_in_order(args: Vec<Ir>, body: Ir) -> Ir {
+    args.iter().enumerate().rev().fold(body, |b, (k, v)| Ir::Let(Arc::new(shift(v, k, 0)), Arc::new(b)))
+}
+
 pub fn shift(ir: &Ir, k: usize, cutoff: usize) -> Ir {
     fn go(ir: &Ir, k: usize, depth: usize) -> Ir {
         let a = |x: &Arc<Ir>, d: usize| Arc::new(go(x, k, d));

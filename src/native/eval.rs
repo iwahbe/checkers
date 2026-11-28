@@ -384,7 +384,7 @@ impl<'g> Evaluator<'g> {
             }
             let ir = super::ir::map_globals(&ir, &|d| {
                 specs.copy(d.0).map(|c| match &c.body {
-                    super::spec::Body::Term(t) => super::ir::Compiler::new(self.g, Some(c.of)).go_pub(t),
+                    super::spec::Body::Term(t) => super::ir::Compiler::new(self.g, c.owner).go_pub(t),
                     super::spec::Body::Folded { code, .. } => super::ir::shift(code, 0, 0),
                 })
             });

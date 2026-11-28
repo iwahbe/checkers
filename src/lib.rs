@@ -792,6 +792,9 @@ fn doc_comments(c: &mut Checked, e: &elab::Elab, user: &str, dir: &std::path::Pa
 
 /// Evaluate the module's `check` declarations (#532).
 fn run_checks(c: &mut Checked, e: &elab::Elab, user: &str) {
+    // From here on native code runs the program's code: its runtime errors
+    // never name another package's private functions (§6 rule 9).
+    e.hide_private(user);
     // A module verified before has passed its `check`s (#628).
     let known: std::collections::HashSet<String> = remembered(c, e, user).keys().cloned().collect();
     let mods: Vec<String> = program_modules(e, user).into_iter().filter(|m| !known.contains(m)).collect();

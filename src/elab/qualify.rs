@@ -39,12 +39,26 @@ impl Elab {
         if self.package_of(home) == self.package_of(module) {
             return false;
         }
+        // An instance's function, or the function building its dictionary.
+        if let Sym::Def(d) = sym {
+            if self.inst_fns.contains(&d) || self.dict_defs.contains(&d) {
+                return false;
+            }
+        }
         // Declared by its module under its name (not an instance's
         // function, nor one the compiler made), and not exported.
         self.modules.get(home).is_some_and(|mi| {
             let (all, exported) = if matches!(sym, Sym::Ty(_)) { (&mi.types, &mi.exported_types) } else { (&mi.values, &mi.exported_values) };
             all.get(&**name) == Some(&sym) && !exported.contains(&**name)
         })
+    }
+
+    /// Record, for native code, the functions a runtime error in a program
+    /// whose code is in `module` never names (`Globals::hidden`): those
+    /// `hidden_from` it.
+    pub fn hide_private(&self, module: &str) {
+        let hidden = (0..self.g.defs.len() as u32).map(crate::core::DefId).filter(|d| self.hidden_from(module, Marked::Def(*d))).collect();
+        *self.g.hidden.borrow_mut() = hidden;
     }
 
     /// The module of `full` (`std.prelude.string_le`), a declaration a
