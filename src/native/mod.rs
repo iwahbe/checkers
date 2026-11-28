@@ -758,14 +758,16 @@ mod tests {
     /// static data (§8.9, tests/run/folded_function.ck): `pick`'s arms are
     /// lambdas' closures laid out in the program, so its code is that of
     /// `by_hand`, which returns constants; `pick_partial`'s, a function
-    /// given an argument, are laid out the same way.
+    /// given an argument, are laid out the same way, so its code is that of
+    /// `by_hand_partial`. The code names the data it loads: equal values
+    /// are the same object.
     #[test]
     fn functions_computed_when_compiling_are_static() {
         crate::with_big_stack(|| {
             for (triple, _) in MACHINES {
                 let code = machine_code("folded_function", triple);
                 assert_eq!(code_of(&code, "pick"), code_of(&code, "by_hand"), "{triple}");
-                assert_eq!(code_of(&code, "pick_partial"), code_of(&code, "by_hand"), "{triple}");
+                assert_eq!(code_of(&code, "pick_partial"), code_of(&code, "by_hand_partial"), "{triple}");
             }
         })
     }
