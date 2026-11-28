@@ -28,6 +28,7 @@ import term (Sig, Context, Problem, BadSort, NoCtors, BadApply, Unbound, EmptyLe
 import term (NotWellFounded, NoBaseCase, NotCovariant)
 import term (NamedTwice, PlainInGroup)
 import reserved
+import model
 
 # ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -231,6 +232,14 @@ export fn values_ok c vs -> r : c~Context, vs~Option (List Term), r~Bool
     match vs
         None    -> True
         Some ts -> term.terms_ok c ts
+
+# A query's goal is a closed `Bool` term of its context, so
+# `cert.checks`'s condition on the goal holds of every query's goal.
+export lemma query_goal_boolean q : q~Query
+    ensures model.boolean q.context q.goal
+    proof
+        have term.fact_ok_def q.context q.goal
+        have term.check_term_def (term.signature q.context) [] q.goal term.Bool
 
 # ── Names in a signature ─────────────────────────────────────────────────────
 

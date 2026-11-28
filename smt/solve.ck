@@ -91,7 +91,7 @@ export fn solve p goal lim -> r : p~Prepared c, goal~Term, lim~Limits, r~Outcome
                 else
                     # The checker refused what propagation found: the goal
                     # isn't a closed `Bool` term of `c` (never so for a
-                    # query's, `reply.query_goal_boolean`), or the search
+                    # query's, `smtlib.query_goal_boolean`), or the search
                     # has a bug. Never an answer.
                     Outcome (Unknown (Unsupported "a refutation `cert.checks` rejects") None) work
             Fixpoint _                -> Outcome (Unknown Incomplete None) work

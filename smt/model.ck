@@ -652,7 +652,7 @@ fn read_stores n bs -> r : n~Nat, bs~List Nat, r~Option (List (Value, Value), Li
 #
 # "No sort is empty" and "`(Seq e)` is unbounded" rest on every sort of a
 # context having a value, which `value_of` writes: the lemma that it does
-# (from `term.datatypes_hold`, by the kept witnesses) waits for #412.
+# (from `term.datatypes_hold`, by the kept witnesses) waits for #84.
 # Until then `fresh` and `normal_differ` find their index by computing it,
 # and a sort `value_of` gave none for would make them answer `Truth False`.
 
@@ -3532,9 +3532,10 @@ export lemma definitions_ok c : c~Context
 # ── `before` is a strict total order ─────────────────────────────────────────
 # What normal forms rest on (#308's reading, owed by S6): `before` never
 # holds of a value and itself, chains, and orders every two different
-# values. `before` itself stays sealed; these are its exported facts.
+# values. `before` is private, and so are these: they are for this
+# module's proofs about normal forms.
 
-export lemma before_irreflexive a : a~Value
+lemma before_irreflexive a : a~Value
     ensures not (before a a)
     proof
         match a
@@ -3551,7 +3552,7 @@ lemma all_before_irreflexive xs : xs~List Value
                 have before_irreflexive x
                 have all_before_irreflexive rest
 
-export lemma before_transitive a b d : a~Value, b~Value, d~Value, before a b, before b d
+lemma before_transitive a b d : a~Value, b~Value, d~Value, before a b, before b d
     ensures before a d
     proof
         match (a, b, d)
@@ -3573,7 +3574,7 @@ lemma all_before_transitive xs ys zs : xs~List Value, ys~List Value, zs~List Val
                     auto
             _                           -> auto
 
-export lemma before_total a b : a~Value, b~Value, a != b
+lemma before_total a b : a~Value, b~Value, a != b
     ensures before a b or before b a
     proof
         match (a, b)
