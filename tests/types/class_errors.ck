@@ -1,6 +1,6 @@
 module class_errors
 
-# What is wrong with a class or an instance, and with using them (D136).
+# What is wrong with a class or an instance, and with using them (#615).
 
 class Show a
     fn show x -> s : x~a, s~String

@@ -1,0 +1,17 @@
+error[E0450]: cannot prove `k > 0`, required to call `pos`
+ --> call_in_type_circular.ck:8:38
+  |
+8 | fn circular k a b : k~Int, a~(x~Int, pos k > 0), b~(y~Int, pos k > 0)
+  |                                      ^^^^^ `pos` requires `k > 0`
+  = note: counterexample: k = 0
+  = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `k > 0`, required to call `pos`
+ --> call_in_type_circular.ck:8:60
+  |
+8 | fn circular k a b : k~Int, a~(x~Int, pos k > 0), b~(y~Int, pos k > 0)
+  |                                                            ^^^^^ `pos` requires `k > 0`
+  = note: counterexample: k = 0
+  = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+call_in_type_circular.ck: 2 errors, 0 warnings

@@ -1,4 +1,4 @@
-# Classes over type constructors (M25, D136): `Functor` at `List`,
+# Classes over type constructors (M25, #615): `Functor` at `List`,
 # `Option` and `Array`, a program's own instance, and a function generic
 # over any `Functor`, its dictionary passed at run time.
 module functor

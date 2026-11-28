@@ -34,7 +34,7 @@ partial fn forever n -> m : n~Nat, m~Nat
 fn calls_partial n -> m : n~Nat, m~Nat
     forever n
 
-# A lemma that uses itself must be an induction (D49).
+# A lemma that uses itself must be an induction (#547).
 lemma circular x : x~Int
     ensures x > x
     proof

@@ -1,9 +1,61 @@
-//! `ckc`, the compiler's command-line driver (D96).
+//! `ckc`, the compiler's command-line driver (#587).
 
+use std::alloc::{GlobalAlloc, Layout};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering::Relaxed};
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: Heap = Heap;
+
+/// mimalloc, counting the bytes in use and their peak when
+/// `CHECKERS_PEAK_HEAP=1` asks for it (printed at exit). Unlike the
+/// process's peak resident memory, the peak is exact and the same in every
+/// run: it holds neither the allocator's free pages nor Z3's memory nor the
+/// program's code, so a test can tell how memory grows with a program from
+/// small programs (`tests/scaling.rs`).
+struct Heap;
+
+static COUNTING: AtomicBool = AtomicBool::new(false);
+// Signed: a block allocated before counting starts may be freed after.
+static IN_USE: AtomicIsize = AtomicIsize::new(0);
+static PEAK: AtomicIsize = AtomicIsize::new(0);
+
+impl Heap {
+    fn grew(n: usize) {
+        if COUNTING.load(Relaxed) {
+            let n = n as isize;
+            let now = IN_USE.fetch_add(n, Relaxed) + n;
+            PEAK.fetch_max(now, Relaxed);
+        }
+    }
+    fn shrank(n: usize) {
+        if COUNTING.load(Relaxed) {
+            IN_USE.fetch_sub(n as isize, Relaxed);
+        }
+    }
+}
+
+// SAFETY: each call is mimalloc's; the counts don't touch the memory.
+unsafe impl GlobalAlloc for Heap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        Heap::grew(layout.size());
+        unsafe { mimalloc::MiMalloc.alloc(layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        Heap::grew(layout.size());
+        unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        Heap::shrank(layout.size());
+        unsafe { mimalloc::MiMalloc.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // Both blocks are held while the contents move.
+        Heap::grew(new_size);
+        Heap::shrank(layout.size());
+        unsafe { mimalloc::MiMalloc.realloc(ptr, layout, new_size) }
+    }
+}
 
 const USAGE: &str = "\
 ckc — the Checkers compiler (usually run through `checkers`, the build tool)
@@ -40,17 +92,23 @@ USAGE:
 ";
 
 fn main() -> ExitCode {
+    let peak_heap = std::env::var_os("CHECKERS_PEAK_HEAP").is_some();
+    // Counted from here: what was allocated before isn't freed after.
+    COUNTING.store(peak_heap, Relaxed);
     // The elaborator recurses deeply, so everything runs on a big stack.
     let code = checkers::with_big_stack(|| {
         let args: Vec<String> = std::env::args().skip(1).collect();
         cli(&args)
     });
+    if peak_heap {
+        eprintln!("peak heap: {} bytes", PEAK.load(Relaxed));
+    }
     ExitCode::from(code)
 }
 
 static NO_CACHE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Cache Z3's answers beside `path`'s module root (D100), unless
+/// Cache Z3's answers beside `path`'s module root (#591), unless
 /// `--no-cache` or `CHECKERS_NO_CACHE` says not to.
 fn use_cache(path: &str) {
     let off = NO_CACHE.load(std::sync::atomic::Ordering::Relaxed) || std::env::var_os("CHECKERS_NO_CACHE").is_some();
@@ -59,7 +117,7 @@ fn use_cache(path: &str) {
 
 fn cli(args: &[String]) -> u8 {
     // Options before the file (after it, arguments are the program's):
-    // `--no-cache`, and the packages of this build (D111).
+    // `--no-cache`, and the packages of this build (#608).
     let first_file = args.iter().position(|a| a.ends_with(".ck")).unwrap_or(args.len());
     let mut kept: Vec<String> = Vec::new();
     let mut pkgs = checkers::elab::stdlib::Packages::default();
@@ -289,7 +347,7 @@ fn take_overlay(args: &[String]) -> Result<Vec<&String>, ExitCode> {
     Ok(rest)
 }
 
-/// `ckc complete [--overlay MAP] FILE LINE COL` (D142).
+/// `ckc complete [--overlay MAP] FILE LINE COL` (#626).
 fn complete(args: &[String]) -> ExitCode {
     let rest = match take_overlay(args) {
         Ok(r) => r,
@@ -317,7 +375,7 @@ fn complete(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `ckc index [--overlay MAP] FILE` (D161).
+/// `ckc index [--overlay MAP] FILE` (#648).
 fn index(args: &[String]) -> ExitCode {
     let rest = match take_overlay(args) {
         Ok(r) => r,
@@ -423,7 +481,7 @@ fn doc(args: &[String]) -> ExitCode {
 }
 
 /// `ckc doc --std`: every standard-library module's documentation, one
-/// after another (for links to it from pages outside it, D148 c).
+/// after another (for links to it from pages outside it, #642 c).
 fn doc_std() -> ExitCode {
     let dir = match checkers::elab::stdlib::dir() {
         Ok(d) => d,

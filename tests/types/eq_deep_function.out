@@ -1,0 +1,8 @@
+error[E0263]: `==` can't compare `Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Int -> Int))))))))))))))))))))))))))))))))))))))))`: it contains a function, `Int -> Int`
+ --> eq_deep_function.ck:7:5
+  |
+7 |     a == b
+  |     ^^^^^^ has type `Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Int -> Int))))))))))))))))))))))))))))))))))))))))`
+  = help: compare what the functions return instead, such as `f x == g x`
+
+eq_deep_function.ck: 1 error, 0 warnings

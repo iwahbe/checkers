@@ -1,4 +1,4 @@
-# doc.ck — `checkers doc` and `checkers site` (SPEC §15.6, D131): a
+# doc.ck — `checkers doc` and `checkers site` (SPEC §15.6, #623): a
 # package's documentation, and the language's site, each page as Markdown
 # and as HTML rendered from it.
 
@@ -398,7 +398,7 @@ partial fn flatten xss -> r : xss~List (List a), r~List a
         []         -> []
         xs :: rest -> xs ++ flatten rest
 
-# A name a signature can link to: a type, or a constructor or constant (D26).
+# A name a signature can link to: a type, or a constructor or constant (#521).
 record Target
     home~String
     name~String
@@ -515,7 +515,7 @@ partial fn read_all ckc dir rels p acc -> r : ckc~String, dir~String, rels~List 
                 Err e -> Err e
                 Ok m  -> read_all ckc dir rest p (m :: acc)
 
-# ── Symbols and warnings (D148) ──────────────────────────────────────────────
+# ── Symbols and warnings (#642) ──────────────────────────────────────────────
 
 # What `[name]` links can name in modules `ms`: each module, declaration,
 # constructor and field, at its page (`list.html#fn-sort`) under `dir`.
@@ -608,7 +608,7 @@ partial fn work_dir key fs -> r : key~String, fs~Fs, r~String
     let _ = files.create_dirs dir fs
     dir
 
-# The directory module `m`'s name is relative to (D53): its file's, less a
+# The directory module `m`'s name is relative to (#548): its file's, less a
 # directory for each of its name's leading parts.
 partial fn module_root m -> r : m~Module, r~String
     climb (dir_name m.file) (list.length (dotted (string.bytes m.name) 0 0 []))
@@ -643,7 +643,7 @@ partial fn write_modules out package ts ms root label cx fs p term -> r : out~St
             let links = \q n ty -> resolve package ts m q n ty
             let scope = module_scope m (prelude_scope ms ++ cx.scope)
             # A module's blocks are compiled as if beside it, in its program
-            # (D148 d): they may import its modules as it does.
+            # (#642 d): they may import its modules as it does.
             let compiler = Compiler cx.compiler.ckc (module_root m) cx.compiler.flags
             let here = Context cx.symbols scope cx.base compiler links (Some (m.name, list.map item_name m.decls))
             let (body, ws) = lit.render text here fs p
@@ -676,7 +676,7 @@ partial fn with_slash root -> r : root~String, r~String
     if root == "" or ends_with root "/" then root else root ++ "/"
 
 # The package's name: `--name`, else the name in `DIR/checkers.json`, else
-# `DIR`'s last part (D177).
+# `DIR`'s last part (#669).
 partial fn package_name a fs -> r : a~DocArgs, fs~Fs, r~Result PackageName String
     let path = join_path a.dir "checkers.json"
     if a.name != ""

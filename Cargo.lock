@@ -68,7 +68,6 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-object",
- "libc",
  "mimalloc",
  "num-bigint",
  "num-traits",

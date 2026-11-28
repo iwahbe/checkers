@@ -1,7 +1,7 @@
 module tuple_refinements
 
-# A tuple's parts keep their refinements when a pattern takes it apart (D71,
-# D82): each part at a refined type is known to satisfy it.
+# A tuple's parts keep their refinements when a pattern takes it apart (#554,
+# #576): each part at a refined type is known to satisfy it.
 
 fn plain t -> r : t~(Bool, (s~Nat, s > 3)), r~Nat, r > 3
     match t
@@ -18,7 +18,7 @@ fn step k o -> r : k~Nat, o~Option (Bool, (s~Nat, k < s)), r~Nat, r > k
         Some (_, s) -> s
         None        -> k + 1
 
-# Three parts are two, the last a pair (D174): each keeps its refinement.
+# Three parts are two, the last a pair (#673): each keeps its refinement.
 fn last t -> r : t~(Bool, Bool, (s~Nat, s > 3)), r~Nat, r > 3
     match t
         (_, _, s) -> s

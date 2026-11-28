@@ -1,4 +1,4 @@
-# Unknown types in messages (D141): an unknown standing for a function's
+# Unknown types in messages (#627): an unknown standing for a function's
 # type parameter is shown by its name, `?f`; a mismatch that follows from
 # an unknown already in a reported error isn't reported again.
 module unknowns

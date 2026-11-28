@@ -2,13 +2,15 @@
 //! diagnostic (`T` from two modules) are each shown as the module the
 //! diagnostic is in refers to it: unqualified if that name is it there,
 //! else through the qualifier of an import of its module (`b.T`), else by
-//! its module's full name. Other names are shown as declared.
+//! its module's full name. Other names are shown as declared, except
+//! another package's private declarations, which are never named (§6
+//! rule 9).
 //!
 //! The printer marks each global it names (`core::show_marked`); a
 //! diagnostic's text is unmarked once it is complete, when it is filed.
 
 use super::{Elab, ModuleInfo, Sym};
-use crate::core::{marks, unmark, Marked};
+use crate::core::{marks, show_marked, unmark, Icit, Marked, Scope, Tm};
 use crate::diag::Diagnostic;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,6 +22,101 @@ impl Elab {
             Marked::Ty(t) => &self.g.tys[t.0 as usize].module,
             Marked::Con(c) => &self.g.tys[self.g.cons[c.0 as usize].ty.0 as usize].module,
             Marked::Var { .. } => "",
+        }
+    }
+
+    /// `m` is a declaration that a module of another package than
+    /// `module`'s keeps private (§6 rule 9): a diagnostic in `module`
+    /// never names it.
+    pub fn hidden_from(&self, module: &str, m: Marked) -> bool {
+        let (name, sym) = match m {
+            Marked::Def(d) => (&self.g.defs[d.0 as usize].name, Sym::Def(d)),
+            Marked::Ty(t) => (&self.g.tys[t.0 as usize].name, Sym::Ty(t)),
+            Marked::Con(c) => (&self.g.cons[c.0 as usize].name, Sym::Con(c)),
+            Marked::Var { .. } => return false,
+        };
+        let home = self.home_of(m);
+        if self.package_of(home) == self.package_of(module) {
+            return false;
+        }
+        // An instance's function, or the function building its dictionary.
+        if let Sym::Def(d) = sym {
+            if self.inst_fns.contains(&d) || self.dict_defs.contains(&d) {
+                return false;
+            }
+        }
+        // Declared by its module under its name (not an instance's
+        // function, nor one the compiler made), and not exported.
+        self.modules.get(home).is_some_and(|mi| {
+            let (all, exported) = if matches!(sym, Sym::Ty(_)) { (&mi.types, &mi.exported_types) } else { (&mi.values, &mi.exported_values) };
+            all.get(&**name) == Some(&sym) && !exported.contains(&**name)
+        })
+    }
+
+    /// Record, for native code, the functions a runtime error in a program
+    /// whose code is in `module` never names (`Globals::hidden`): those
+    /// `hidden_from` it.
+    pub fn hide_private(&self, module: &str) {
+        let hidden = (0..self.g.defs.len() as u32).map(crate::core::DefId).filter(|d| self.hidden_from(module, Marked::Def(*d))).collect();
+        *self.g.hidden.borrow_mut() = hidden;
+    }
+
+    /// The module of `full` (`std.prelude.string_le`), a declaration a
+    /// module of another package than `module`'s keeps private (§6 rule
+    /// 9), if it is one.
+    pub fn hidden_home(&self, module: &str, full: &str) -> Option<String> {
+        let (home, name) = full.rsplit_once('.')?;
+        let sym = self.modules.get(home)?.values.get(name)?;
+        let m = match *sym {
+            Sym::Def(d) => Marked::Def(d),
+            Sym::Con(c) => Marked::Con(c),
+            Sym::Ty(t) => Marked::Ty(t),
+            _ => return None,
+        };
+        self.hidden_from(module, m).then(|| home.to_string())
+    }
+
+    /// How a diagnostic in `module` speaks of the sealed function `s`, the
+    /// first of `collect_sealed`'s, in a term under the locals `names`: by
+    /// its name, or, when it is another package's private function (§6
+    /// rule 9), by what was called to reach it. With whether that is
+    /// plural (`<=`, `<`, `>=` and `>` on `String`), and whether the
+    /// function is such a private one.
+    pub fn sealed_subject<S: Scope + ?Sized>(&self, module: &str, s: &crate::elab::Sealed, names: &S) -> (String, bool, bool) {
+        if !self.hidden_from(module, Marked::Def(s.def)) {
+            return (format!("`{}`", show_marked(&self.g, names, &Tm::Def(s.def))), false, false);
+        }
+        let Some(via) = &s.via else { return ("this".to_string(), false, true) };
+        let mut h = via;
+        let mut implicit = Vec::new();
+        while let Tm::App(f, a, i, _) = h {
+            if *i == Icit::Impl {
+                implicit.push(a.clone());
+            }
+            h = f;
+        }
+        implicit.reverse();
+        let Tm::Def(f) = h else { return ("this".to_string(), false, true) };
+        let called = &self.g.defs[f.0 as usize];
+        // A class's function at an instance: its operators, or its name,
+        // at the instance's types.
+        let class = self.class_defs.values().find(|c| {
+            *c.module == *called.module
+                && c.members.iter().any(|m| matches!(m, crate::syntax::ast::ClassMember::Fn { name, .. } if *name.name == *called.name))
+        });
+        let Some(class) = class.filter(|_| self.g.well_known.class_fns.contains(f)) else {
+            return (format!("`{}`", show_marked(&self.g, names, &Tm::Def(*f))), false, true);
+        };
+        let at: Vec<String> = implicit.iter().take(class.params.len()).map(|t| show_marked(&self.g, names, t)).collect();
+        let at = at.join("`, `");
+        let ops: Vec<&str> = if *called.module == *"std.prelude" { crate::elab::Elab::spellings(&called.name) } else { Vec::new() };
+        match ops.as_slice() {
+            [] => (format!("`{}.{}` at `{at}`", class.name, called.name), false, true),
+            [one] => (format!("`{one}` on `{at}`"), false, true),
+            [init @ .., last] => {
+                let init: Vec<String> = init.iter().map(|o| format!("`{o}`")).collect();
+                (format!("{} and `{last}` on `{at}`", init.join(", ")), true, true)
+            }
         }
     }
 
@@ -59,11 +156,16 @@ impl Elab {
     fn names_for(&self, module: &str, texts: &[&str]) -> (BTreeMap<Marked, String>, Option<String>, Vec<String>) {
         let mut by_name: BTreeMap<String, BTreeSet<Marked>> = BTreeMap::new();
         let mut vars: BTreeMap<String, BTreeMap<u32, Marked>> = BTreeMap::new();
+        let mut shown = BTreeMap::new();
         for t in texts {
             for (m, n) in marks(t) {
                 match m {
                     Marked::Var { level, .. } => {
                         vars.entry(n).or_default().insert(level, m);
+                    }
+                    // Another package's private declaration: not named.
+                    _ if self.hidden_from(module, m) => {
+                        shown.insert(m, "…".to_string());
                     }
                     _ => {
                         by_name.entry(n).or_default().insert(m);
@@ -71,7 +173,6 @@ impl Elab {
                 }
             }
         }
-        let mut shown = BTreeMap::new();
         let mut helps = Vec::new();
         let notes = self.name_locals(module, texts, &vars, &mut shown);
         for (name, ms) in &by_name {

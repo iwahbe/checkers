@@ -1,5 +1,5 @@
 # Hover shows a name's signature and its description: the comment lines
-# directly above its declaration (D128).
+# directly above its declaration (#617).
 > {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-32","utf-8","utf-16"]}}}}
 < 1
 > {"jsonrpc":"2.0","method":"initialized","params":{}}

@@ -1,0 +1,15 @@
+error[E0213]: `make` is a module, not a value
+ --> class_fn_help_qualified.ck:8:5
+  |
+8 |     make n
+  |     ^^^^
+  = help: `make` is a function of the class `make.Make`: write `make.make`
+
+error[E0204]: unknown name `pick`
+  --> class_fn_help_qualified.ck:11:5
+   |
+11 |     pick n
+   |     ^^^^ not found
+   = help: `pick` is a function of the class `make.Make`: write `make.pick`
+
+class_fn_help_qualified.ck: 2 errors, 0 warnings

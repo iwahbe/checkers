@@ -1,4 +1,4 @@
-# The package's index (D161): references and rename across its files, from app.ck,
+# The package's index (#648): references and rename across its files, from app.ck,
 # including doc comments' links and code in shapes.ck.
 > {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-8"]}}}}
 < 1

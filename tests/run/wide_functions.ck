@@ -1,6 +1,6 @@
 module wide_functions
 
-# A function or constructor takes any number of parameters (D179).
+# A function or constructor takes any number of parameters (#674).
 
 import std.system (System, ExitCode)
 import std.terminal (Term)

@@ -1,7 +1,7 @@
 module specialize
 
 # A compile-time function that recurses on runtime values becomes one
-# runtime function per set of compile-time arguments (SPEC §8.9, D64).
+# runtime function per set of compile-time arguments (SPEC §8.9, #570).
 
 import std.system (System, ExitCode)
 import std.terminal (Term)

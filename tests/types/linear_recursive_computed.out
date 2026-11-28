@@ -1,0 +1,8 @@
+error[E0404]: this drops a resource of type `Chain 1`
+  --> linear_recursive_computed.ck:21:9
+   |
+21 |     let _ = c
+   |         ^ a resource must be used exactly once
+   = help: bind it to a name, then close it or pass it on
+
+linear_recursive_computed.ck: 1 error, 0 warnings

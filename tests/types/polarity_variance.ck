@@ -1,6 +1,6 @@
 module polarity_variance
 
-# D16 marks give D71 variance: `+` covariant, `-` contravariant, unmarked invariant.
+# #511 marks give #554 variance: `+` covariant, `-` contravariant, unmarked invariant.
 
 import std.future (Future)
 

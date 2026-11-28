@@ -23,7 +23,9 @@
 use super::ir::{shift, Ir, IrCase, Lit, Op};
 use super::lower::{SNode, Static};
 use crate::core::{DefId, Globals, Tm};
+use crate::native::spec::Specs;
 use checkers_rt::word as w;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -66,6 +68,17 @@ pub fn checking() -> bool {
     std::env::var_os("CHECKERS_RESIDUAL_CHECK").is_some()
 }
 
+/// Gives the copy of a definition for a call's static arguments, and the
+/// arguments the call then passes (`Folder::fold_def`).
+pub type CopyFn<'a> = dyn FnMut(u32, &[Arc<Ir>]) -> Option<(DefId, Vec<Arc<Ir>>)> + 'a;
+
+/// What folding a definition's code needs: the program's copies, and how
+/// to make one.
+struct Cx<'a, 'b> {
+    specs: &'a RefCell<Specs>,
+    copy: &'a mut CopyFn<'b>,
+}
+
 /// Folds code: one per program, so each operation is computed once.
 pub struct Folder<'g> {
     g: &'g Globals,
@@ -88,16 +101,19 @@ impl<'g> Folder<'g> {
         Folder { g, staged, ev: None, memo: HashMap::new(), disk: Default::default(), pure: HashMap::new(), kept: Vec::new() }
     }
 
-    /// `ir` folded, for a program whose copies are `specs`.
-    pub fn fold_def(&mut self, ir: &Arc<Ir>, specs: &crate::native::spec::Specs) -> Arc<Ir> {
+    /// `ir` folded, for a program whose copies are `specs`. A call of a
+    /// definition passing static data and other values calls the copy
+    /// `copy` gives for that data, if any, passing the arguments it gives
+    /// (§8.9, `spec::specialize_folded`).
+    pub fn fold_def(&mut self, ir: &Arc<Ir>, specs: &RefCell<Specs>, copy: &mut CopyFn) -> Arc<Ir> {
         self.kept.clear();
         if let Some(ev) = &mut self.ev {
-            ev.mirror(specs);
+            ev.mirror(&specs.borrow());
         }
-        self.fold(ir, specs)
+        self.fold(ir, &mut Cx { specs, copy })
     }
 
-    fn fold(&mut self, ir: &Arc<Ir>, specs: &crate::native::spec::Specs) -> Arc<Ir> {
+    fn fold(&mut self, ir: &Arc<Ir>, specs: &mut Cx) -> Arc<Ir> {
         let g = self.g;
         match &**ir {
             Ir::Var(_) | Ir::Global(_) | Ir::Erased | Ir::Lit(_) | Ir::ConFn(_) | Ir::Fail(_) | Ir::Static(..) => ir.clone(),
@@ -153,7 +169,7 @@ impl<'g> Folder<'g> {
                 }
                 let r = match arith(self.g, *op, args, *nat) {
                     Some(r) => r,
-                    None => self.run(&node, specs),
+                    None => self.run(&node, &specs.specs.borrow()),
                 };
                 self.settle(node, r)
             }
@@ -174,13 +190,21 @@ impl<'g> Folder<'g> {
                     _ => return node,
                 };
                 if !args.iter().all(|a| is_static(g, a)) {
+                    // Some arguments are static data: the copy for them.
+                    if let Ir::Global(d) = &**h {
+                        if args.iter().any(|a| is_static(g, a)) {
+                            if let Some((c, rest)) = (specs.copy)(d.0, args) {
+                                return Arc::new(Ir::Call(Arc::new(Ir::Global(c)), rest));
+                            }
+                        }
+                    }
                     return node;
                 }
                 let r = match self.g.fold_work.get() {
                     None => Err(Kept::Unproved),
-                    Some(_) => match defs.iter().try_for_each(|d| self.pure_def(DefId(specs.origin(*d)))) {
+                    Some(_) => match defs.iter().try_for_each(|d| self.pure_def(DefId(specs.specs.borrow().origin(*d)))) {
                         Err(k) => Err(k),
-                        Ok(()) => self.run(&node, specs),
+                        Ok(()) => self.run(&node, &specs.specs.borrow()),
                     },
                 };
                 self.settle(node, r)
@@ -228,7 +252,7 @@ impl<'g> Folder<'g> {
         });
         let r = match ev.eval_ir_limited(node, work) {
             Ok(v) => {
-                let out = ev.within_program(|| from_word(v));
+                let out = ev.within_program(|| from_word(v, &mut ev.closure_reader()));
                 ev.release(v);
                 match out {
                     Some((s, id)) => {
@@ -443,7 +467,7 @@ fn subst0(b: &Ir, v: &Arc<Ir>) -> Ir {
 
 /// A key for closed code: equal keys, equal code. `None` for code with a
 /// part it doesn't name exactly.
-fn key(ir: &Ir) -> Option<String> {
+pub fn key(ir: &Ir) -> Option<String> {
     let mut out = String::new();
     write_key(ir, &mut out).then_some(out)
 }
@@ -510,9 +534,13 @@ fn write_key(ir: &Ir, out: &mut String) -> bool {
 }
 
 /// A runtime value as static data, where it has a static form: numbers,
-/// bytes, arrays, constructors and tuples of such. Walked with a stack of its own,
-/// so a value of any depth takes the same stack.
-pub fn from_word(v: w::W) -> Option<(Static, u32)> {
+/// bytes, arrays, constructors and tuples of such, and functions: a
+/// closure whose code `code` names (a definition's, a constructor's, or a
+/// lambda's with the values it captured), or one given some of its
+/// arguments. Walked with a stack of its own, so a value of any depth
+/// takes the same stack.
+pub fn from_word(v: w::W, code: &mut dyn FnMut(w::W) -> Option<crate::known::Code>) -> Option<(Static, u32)> {
+    use crate::known::Code;
     let mut s = Static::default();
     let mut done: HashMap<w::W, u32> = HashMap::new();
     // Each object's parts, as first read.
@@ -570,6 +598,37 @@ pub fn from_word(v: w::W) -> Option<(Static, u32)> {
                 }
                 let elems: Box<[u32]> = parts[&x].iter().map(|p| done[p]).collect();
                 s.add(SNode::Array { layout: layout as u8, elems })
+            }
+            // A lambda's closure capturing values is its code given them,
+            // as a partial application's is its function given arguments.
+            w::K_CLO => match code(x)? {
+                Code::Def(d) => s.add(SNode::Global(d.0)),
+                Code::Con(c) => s.add(SNode::ConFn(c.0)),
+                Code::Lam(lam) if lam.captured == 0 => s.add(SNode::Lam(lam)),
+                Code::Lam(lam) => {
+                    if !ready {
+                        let ps: Vec<w::W> = (1..=lam.captured).map(|i| w::slot(x, i)).collect();
+                        stack.push((x, true));
+                        stack.extend(ps.iter().copied().filter(|p| !done.contains_key(p)).map(|p| (p, false)));
+                        parts.insert(x, ps);
+                        continue;
+                    }
+                    let f = s.add(SNode::Lam(lam));
+                    let fields: Box<[u32]> = std::iter::once(f).chain(parts[&x].iter().map(|p| done[p])).collect();
+                    s.add(SNode::Obj { kind: w::K_PAP, tag: 0, fields })
+                }
+            },
+            // Its function, then the arguments it holds.
+            w::K_PAP => {
+                if !ready {
+                    let ps: Vec<w::W> = (0..=w::nfields(x)).map(|i| w::slot(x, i)).collect();
+                    stack.push((x, true));
+                    stack.extend(ps.iter().copied().filter(|p| !done.contains_key(p)).map(|p| (p, false)));
+                    parts.insert(x, ps);
+                    continue;
+                }
+                let fields: Box<[u32]> = parts[&x].iter().map(|p| done[p]).collect();
+                s.add(SNode::Obj { kind: w::K_PAP, tag: 0, fields })
             }
             _ => return None,
         };

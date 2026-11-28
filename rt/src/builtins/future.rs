@@ -12,7 +12,7 @@ pub const TABLE: &[Builtin] = &[
 
 builtin!(ckb_future_ready, |a| new_obj(Obj::Future(new_cell(dup(a[0])))));
 
-// `fork sched f` (D171): scheduled as a behaviour; `join x` (D176): the
+// `fork sched f` (#658): scheduled as a behaviour; `join x` (#662): the
 // values, parking until they are there (`behav.rs`).
 builtin!(ckb_future_fork, |a| crate::behav::ck_fork(a[1]));
 builtin!(ckb_future_join, |a| crate::behav::join_values(a[0]));

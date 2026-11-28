@@ -1,4 +1,4 @@
-# An array too large to allocate (D184, #25): 2^60 strings are 2^63 bytes,
+# An array too large to allocate (#667, #25): 2^60 strings are 2^63 bytes,
 # more than an allocation can be.
 module too_large_words
 

@@ -212,6 +212,136 @@ instance Ord (Option a) : Ord a
                         None   -> auto
                         Some y -> have Ord.antisym x y
 
+# Arrays by their first elements where they differ; an array before any
+# longer one that starts with it. `Bytes` are ordered by byte.
+instance Ord (Array a) : Ord a
+    transparent fn le xs ys
+        array_le_from xs ys (array_mismatch xs ys)
+    lemma trans xs ys zs
+        proof
+            have array_le_skip xs ys 0
+            have array_le_skip ys zs 0
+            have array_le_skip xs zs 0
+            have array_le_trans xs ys zs 0
+    lemma total xs ys
+        proof
+            have array_le_skip xs ys 0
+            have array_le_skip ys xs 0
+            have array_le_total xs ys 0
+    lemma antisym xs ys
+        proof
+            have array_le_skip xs ys 0
+            have array_le_skip ys xs 0
+            have array_le_len xs ys 0
+            have array_le_same xs ys 0
+
+# Whether `xs` comes before `ys` or with it, comparing from index `i` on.
+fn array_le_from xs ys i -> r : Ord a, xs~Array a, ys~Array a, i~Nat, i <= len xs, r~Bool
+    decreasing len xs - i
+    if len xs <= i
+        True
+    else if len ys <= i
+        False
+    else
+        Ord.le xs[i] ys[i] and (not (Ord.le ys[i] xs[i]) or array_le_from xs ys (i + 1))
+
+# The first index where two arrays differ, or the shorter one's length.
+fn array_mismatch xs ys -> i : xs~Array a, ys~Array a, i~Nat, i <= len xs, i <= len ys,
+                               (i < len xs and i < len ys) implies not (xs[i] == ys[i])
+    array_mismatch_from xs ys 0
+
+# `array_mismatch`, looking from index `i` on.
+fn array_mismatch_from xs ys i -> r : xs~Array a, ys~Array a, i~Nat, i <= len xs, i <= len ys,
+                                      r~Nat, i <= r, r <= len xs, r <= len ys,
+                                      (r < len xs and r < len ys) implies not (xs[r] == ys[r])
+    decreasing len xs - i
+    if i < len xs and i < len ys and xs[i] == ys[i]
+        array_mismatch_from xs ys (i + 1)
+    else
+        i
+
+# Before the first index where they differ, two arrays are equal.
+lemma array_mismatch_same xs ys k : xs~Array a, ys~Array a, k~Nat, k < array_mismatch xs ys
+    ensures xs[k] == ys[k]
+    proof
+        have array_mismatch_from_same xs ys 0 k
+
+lemma array_mismatch_from_same xs ys i k : xs~Array a, ys~Array a, i~Nat, i <= len xs,
+                                           i <= len ys, k~Nat, i <= k,
+                                           k < array_mismatch_from xs ys i
+    ensures xs[k] == ys[k]
+    proof
+        decreasing len xs - i
+        if i < len xs and i < len ys and xs[i] == ys[i] and i < k
+            have array_mismatch_from_same xs ys (i + 1) k
+        else
+            auto
+
+# Elements that are equal don't decide the order: comparing from `i` is
+# comparing from where the arrays first differ.
+lemma array_le_skip xs ys i : Ord a, xs~Array a, ys~Array a, i~Nat, i <= array_mismatch xs ys
+    ensures array_le_from xs ys i == array_le_from xs ys (array_mismatch xs ys)
+    proof
+        decreasing array_mismatch xs ys - i
+        if i == array_mismatch xs ys
+            auto
+        else
+            have array_mismatch_same xs ys i
+            have refl xs[i]
+            have array_le_skip xs ys (i + 1)
+
+lemma array_le_trans xs ys zs i : Ord a, xs~Array a, ys~Array a, zs~Array a, i~Nat,
+                                  i <= len xs, i <= len ys, array_le_from xs ys i, array_le_from ys zs i
+    ensures array_le_from xs zs i
+    proof
+        decreasing len xs - i
+        if len xs <= i or len ys <= i or len zs <= i
+            auto
+        else
+            have Ord.trans xs[i] ys[i] zs[i]
+            if Ord.le zs[i] xs[i]
+                have Ord.trans ys[i] zs[i] xs[i]
+                have Ord.trans zs[i] xs[i] ys[i]
+                have array_le_trans xs ys zs (i + 1)
+            else
+                auto
+
+lemma array_le_total xs ys i : Ord a, xs~Array a, ys~Array a, i~Nat, i <= len xs,
+                               i <= len ys
+    ensures array_le_from xs ys i or array_le_from ys xs i
+    proof
+        decreasing len xs - i
+        if len xs <= i or len ys <= i
+            auto
+        else
+            have Ord.total xs[i] ys[i]
+            have array_le_total xs ys (i + 1)
+
+lemma array_le_len xs ys i : Ord a, xs~Array a, ys~Array a, i~Nat, i <= len xs, i <= len ys,
+                             array_le_from xs ys i, array_le_from ys xs i
+    ensures len xs == len ys
+    proof
+        decreasing len xs - i
+        if len xs <= i or len ys <= i
+            auto
+        else
+            have Ord.antisym xs[i] ys[i]
+            have array_le_len xs ys (i + 1)
+
+lemma array_le_same xs ys i : Ord a, xs~Array a, ys~Array a, i~Nat, i <= len xs, i <= len ys,
+                              array_le_from xs ys i, array_le_from ys xs i
+    ensures forall k : k~Nat, i <= k, k < len xs, xs[k] == ys[k]
+    proof
+        decreasing len xs - i
+        if len xs <= i or len ys <= i
+            auto
+        else
+            have Ord.antisym xs[i] ys[i]
+            if k == i
+                auto
+            else
+                have array_le_same xs ys (i + 1) k
+
 # ── Operators (M24) ──────────────────────────────────────────────────────────
 # On numbers, `+ - *`, negation and comparisons are built in. On another
 # type they are its instance's: `x + y` is `add x y`, `-x` is `neg x`, and

@@ -1,4 +1,4 @@
-//! Doc comments as literate documentation (D148 e, f): their `[name]` links
+//! Doc comments as literate documentation (#642 e, f): their `[name]` links
 //! and their Checkers code blocks, checked with the module they describe.
 //!
 //! `ckc check` doesn't parse doc comments as full CommonMark (that is
@@ -47,7 +47,7 @@ pub struct Sample {
     pub starts: Vec<usize>,
     pub info: String,
     /// The lines it was given, which aren't the file's: a `module` line, and
-    /// the import of the documented module (D164).
+    /// the import of the documented module (#650).
     pub given: Vec<usize>,
 }
 
@@ -161,7 +161,7 @@ pub fn scan(region: &[Line]) -> (Vec<Block>, Vec<Ref>) {
             i = j + 1;
             continue;
         }
-        // An indented code block (D162): four spaces in from where its
+        // An indented code block (#651): four spaces in from where its
         // text would start, after a blank line, not in a paragraph.
         let base = list_content(&region[..i]);
         if indent_of(&l.text) >= base + 4 && !l.text.trim().is_empty() && (i == 0 || region[i - 1].text.trim().is_empty() || region[i - 1].text.trim_start().starts_with('#')) {
@@ -317,7 +317,7 @@ fn attrs(info: &str) -> Vec<&str> {
     info.split_whitespace().next().unwrap_or("").split(',').skip(1).map(|a| a.trim()).collect()
 }
 
-/// The module a doc comment documents, as its blocks import it (D164): its
+/// The module a doc comment documents, as its blocks import it (#650): its
 /// name and its exported names, so that its blocks needn't import it.
 pub struct Own {
     pub module: String,
@@ -326,7 +326,7 @@ pub struct Own {
 
 impl Own {
     /// From the module's syntax: the names it exports (a type's
-    /// constructors come with it, D36).
+    /// constructors come with it, #530).
     pub fn of(module: &Module) -> Option<Own> {
         use crate::syntax::ast::Export;
         let name = module.name.as_ref()?.dotted();
@@ -363,7 +363,7 @@ impl Own {
 
 /// A block as a module: `#!` lines compiled but not shown, a hidden
 /// `module` line if it has none, and a hidden import of the module `own`
-/// documents unless the block imports it itself (D164).
+/// documents unless the block imports it itself (#650).
 pub fn sample(b: &Block, k: usize, own: Option<&Own>) -> Sample {
     let mut lines: Vec<(String, usize)> = Vec::new();
     for l in &b.lines {
@@ -498,7 +498,7 @@ fn has_member(e: &Elab, t: crate::core::TyId, member: &str) -> bool {
 /// The names a link's path looks up, from where it starts.
 type Scope<'a> = Box<dyn Fn(&str) -> Option<Sym> + 'a>;
 
-/// The declarations a link names (D161): each part of its path that is a
+/// The declarations a link names (#648): each part of its path that is a
 /// declaration, a constructor or a field, with its span in the file, so
 /// that renaming one renames it in the link too.
 pub fn link_targets(e: &Elab, user: &str, r: &Ref) -> Vec<(Span, Target)> {
@@ -572,7 +572,7 @@ pub fn link_targets(e: &Elab, user: &str, r: &Ref) -> Vec<(Span, Target)> {
 }
 
 /// The names a reference may complete to after `[` in a doc comment: the
-/// module's own, its imports' and the prelude's, with what each is (D148 f).
+/// module's own, its imports' and the prelude's, with what each is (#642 f).
 pub fn link_names(e: &Elab, user: &str) -> Vec<(String, &'static str)> {
     let mut out: Vec<(String, &'static str)> = Vec::new();
     let class = |s: &Sym| match s {
@@ -631,7 +631,9 @@ pub fn links_and_samples(text: &str, module: &Module, e: &Elab, user: &str) -> (
 }
 
 /// What checking a sample says, as W032 or W033 at its place in the file.
-pub fn sample_diagnostics(s: &Sample, dir: &std::path::Path) -> Vec<Diagnostic> {
+/// `user` is the module the sample documents: its own diagnostics, which
+/// the sample's imports reach, are reported at their places already.
+pub fn sample_diagnostics(s: &Sample, dir: &std::path::Path, user: &str) -> Vec<Diagnostic> {
     let c = crate::check_in(&format!("{}.ck", s.name), &s.text, dir);
     let fence = s.starts.first().copied().unwrap_or(0);
     let here = Span::new(fence, fence);
@@ -664,7 +666,7 @@ pub fn sample_diagnostics(s: &Sample, dir: &std::path::Path) -> Vec<Diagnostic> 
             w
         })
         .collect();
-    for (name, _, ds) in &c.others {
+    for (name, _, ds) in c.others.iter().filter(|(name, _, _)| name != user) {
         for d in ds {
             out.push(Diagnostic::warning("W032", format!("this example's import `{name}` has {}[{}]: {}", kind(d), d.code, d.message), here));
         }

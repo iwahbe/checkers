@@ -1,4 +1,4 @@
-//! Reference counting, Perceus style (D74; Reinking et al., PLDI 2021).
+//! Reference counting, Perceus style (#567; Reinking et al., PLDI 2021).
 //!
 //! Every variable a function binds is owned: each path through the code
 //! consumes it exactly once. Where several parts of an expression use a
@@ -524,7 +524,7 @@ impl Uses<'_> {
                     }
                 }
             }
-            // `++` appends in place to a left side it owns (D74).
+            // `++` appends in place to a left side it owns (#567).
             E::Borrow { op: BOp::Prim(super::ir::Op::Concat, _), args, .. } => {
                 if let Some(E::Var(x)) = args.first() {
                     self.owned.insert(*x);

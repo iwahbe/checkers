@@ -1,4 +1,4 @@
-# Sorting (D138) and the class `Ord` (D136): lists and arrays, by `Ord`,
+# Sorting (#625) and the class `Ord` (#615): lists and arrays, by `Ord`,
 # by a key, and by a comparison; a record of the program's own with its own
 # instance, and its dictionary passed at run time.
 module sorting
