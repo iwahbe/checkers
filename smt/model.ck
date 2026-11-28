@@ -3831,3 +3831,319 @@ lemma all_before_total xs ys : xs~List Value, ys~List Value, xs != ys
         match (xs, ys)
             (x :: xr, y :: yr) -> if x == y then have all_before_total xr yr else have before_total x y
             _                  -> auto
+
+# ── The normal forms satisfy the array laws ─────────────────────────────────
+
+# `decode` reads back what `code` wrote: the bytes first, then the number.
+
+lemma read_nat_bytes n rest : n~Nat, rest~List Nat
+    ensures read_nat (nat_bytes n ++ rest) == Some (n, rest)
+    proof
+        decreasing n
+        if n < 128
+            auto
+        else
+            have read_nat_bytes (n / 128) rest
+
+lemma read_value_bytes v rest : v~Value, rest~List Nat
+    ensures read_value (value_bytes v ++ rest) == Some (v, rest)
+    proof
+        decreasing value_size v
+        match v
+            Truth _          -> auto
+            Integer n        ->
+                if n >= 0
+                    have read_nat_bytes n rest
+                else
+                    have read_nat_bytes (0 - n) rest
+            Sequence xs      ->
+                have list.append_assoc (nat_bytes (list.length xs)) (values_bytes xs) rest
+                have read_nat_bytes (list.length xs) (values_bytes xs ++ rest)
+                have read_values_bytes xs rest
+            Constructed k fs ->
+                have list.append_assoc (nat_bytes (list.length fs)) (values_bytes fs) rest
+                have list.append_assoc (nat_bytes k) (nat_bytes (list.length fs) ++ values_bytes fs) rest
+                let tail = values_bytes fs ++ rest
+                let after = nat_bytes (list.length fs) ++ tail
+                have value_bytes v == 3 :: ((nat_bytes k ++ nat_bytes (list.length fs)) ++ values_bytes fs)
+                have list.append_assoc (nat_bytes k) (nat_bytes (list.length fs)) (values_bytes fs)
+                have (nat_bytes k ++ (nat_bytes (list.length fs) ++ values_bytes fs)) ++ rest == nat_bytes k ++ after
+                have value_bytes v ++ rest == 3 :: (nat_bytes k ++ after)
+                have read_nat_bytes k after
+                have read_nat (nat_bytes k ++ after) == Some (k, after)
+                have read_nat_bytes (list.length fs) tail
+                have read_values_bytes fs rest
+            Element n        -> have read_nat_bytes n rest
+            ArrayElem k      -> have read_nat_bytes k rest
+
+lemma read_values_bytes vs rest : vs~List Value, rest~List Nat
+    ensures read_values (list.length vs) (values_bytes vs ++ rest) == Some (vs, rest)
+    proof
+        decreasing values_size vs
+        match vs
+            []        -> auto
+            v :: more ->
+                have list.append_assoc (value_bytes v) (values_bytes more) rest
+                have read_value_bytes v (values_bytes more ++ rest)
+                have read_values_bytes more rest
+
+lemma read_stores_bytes st rest : st~List (Value, Value), rest~List Nat
+    ensures read_stores (list.length st) (stores_bytes st ++ rest) == Some (st, rest)
+    proof
+        match st
+            []             -> auto
+            (j, x) :: more ->
+                let after = stores_bytes more ++ rest
+                have list.append_assoc (value_bytes j) (value_bytes x) (stores_bytes more)
+                have list.append_assoc (value_bytes j) (value_bytes x ++ stores_bytes more) rest
+                have list.append_assoc (value_bytes x) (stores_bytes more) rest
+                have stores_bytes st ++ rest == value_bytes j ++ (value_bytes x ++ after)
+                have read_value_bytes j (value_bytes x ++ after)
+                have read_value_bytes x after
+                have read_stores_bytes more rest
+
+lemma read_form_bytes f : f~Form
+    ensures read_form (form_bytes f) == Some (f, [])
+    proof
+        let after = stores_bytes f.stores
+        have list.append_assoc (value_bytes f.base) (nat_bytes (list.length f.stores)) after
+        have list.append_nil after
+        have read_value_bytes f.base (nat_bytes (list.length f.stores) ++ after)
+        have read_nat_bytes (list.length f.stores) after
+        have read_stores_bytes f.stores []
+
+# Whether every one of `bs` is a byte.
+fn bytes_ok bs -> r : bs~List Nat, r~Bool
+    match bs
+        []        -> True
+        d :: rest -> d < 256 and bytes_ok rest
+
+lemma bytes_ok_append xs ys : xs~List Nat, ys~List Nat, bytes_ok xs, bytes_ok ys
+    ensures bytes_ok (xs ++ ys)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have bytes_ok_append rest ys
+
+lemma nat_bytes_ok n : n~Nat
+    ensures bytes_ok (nat_bytes n)
+    proof
+        decreasing n
+        if n < 128 then auto else have nat_bytes_ok (n / 128)
+
+lemma value_bytes_ok v : v~Value
+    ensures bytes_ok (value_bytes v)
+    proof
+        decreasing value_size v
+        match v
+            Truth _          -> auto
+            Integer n        -> if n >= 0 then have nat_bytes_ok n else have nat_bytes_ok (0 - n)
+            Sequence xs      ->
+                have nat_bytes_ok (list.length xs)
+                have values_bytes_ok xs
+                have bytes_ok_append (nat_bytes (list.length xs)) (values_bytes xs)
+            Constructed k fs ->
+                have nat_bytes_ok k
+                have nat_bytes_ok (list.length fs)
+                have values_bytes_ok fs
+                have bytes_ok_append (nat_bytes k) (nat_bytes (list.length fs))
+                have bytes_ok_append (nat_bytes k ++ nat_bytes (list.length fs)) (values_bytes fs)
+            Element n        -> have nat_bytes_ok n
+            ArrayElem k      -> have nat_bytes_ok k
+
+lemma values_bytes_ok vs : vs~List Value
+    ensures bytes_ok (values_bytes vs)
+    proof
+        decreasing values_size vs
+        match vs
+            []        -> auto
+            v :: more ->
+                have value_bytes_ok v
+                have values_bytes_ok more
+                have bytes_ok_append (value_bytes v) (values_bytes more)
+
+lemma stores_bytes_ok st : st~List (Value, Value)
+    ensures bytes_ok (stores_bytes st)
+    proof
+        match st
+            []             -> auto
+            (j, x) :: more ->
+                have value_bytes_ok j
+                have value_bytes_ok x
+                have stores_bytes_ok more
+                have bytes_ok_append (value_bytes j) (value_bytes x)
+                have bytes_ok_append (value_bytes j ++ value_bytes x) (stores_bytes more)
+
+lemma form_bytes_ok f : f~Form
+    ensures bytes_ok (form_bytes f)
+    proof
+        have value_bytes_ok f.base
+        have nat_bytes_ok (list.length f.stores)
+        have stores_bytes_ok f.stores
+        have bytes_ok_append (value_bytes f.base) (nat_bytes (list.length f.stores))
+        have bytes_ok_append (value_bytes f.base ++ nat_bytes (list.length f.stores)) (stores_bytes f.stores)
+
+lemma digits_acc n acc : n~Nat, acc~List Nat
+    ensures digits_of n acc == digits_of n [] ++ acc
+    proof
+        decreasing n
+        if n == 0
+            auto
+        else
+            have digits_acc (n / 256) (n % 256 :: acc)
+            have digits_acc (n / 256) [n % 256]
+            have list.append_assoc (digits_of (n / 256) []) [n % 256] acc
+
+lemma digits_number ds acc : ds~List Nat, acc~Nat, bytes_ok ds, acc > 0
+    ensures digits_of (number_of ds acc) [] == digits_of acc [] ++ ds
+    proof
+        match ds
+            []        -> have list.append_nil (digits_of acc [])
+            d :: rest ->
+                have digits_number rest (acc * 256 + d)
+                have digits_acc acc [d]
+                have d < 256
+                have (acc * 256 + d) / 256 == acc
+                have (acc * 256 + d) % 256 == d
+                have digits_of (acc * 256 + d) [] == digits_of acc [d]
+                have list.append_assoc (digits_of acc []) [d] rest
+
+lemma decode_code f : f~Form
+    ensures decode (code f) == Some f
+    proof
+        have form_bytes_ok f
+        have digits_number (form_bytes f) 1
+        have digits_of 1 [] == [1]
+        have read_form_bytes f
+
+# An array number written in a form is less than the form's number.
+
+lemma number_append ds es acc : ds~List Nat, es~List Nat, acc~Nat
+    ensures number_of (ds ++ es) acc == number_of es (number_of ds acc)
+    proof
+        match ds
+            []        -> auto
+            d :: rest -> have number_append rest es (acc * 256 + d)
+
+lemma number_at_least ds acc : ds~List Nat, acc~Nat
+    ensures number_of ds acc >= acc
+    proof
+        match ds
+            []        -> auto
+            d :: rest -> have number_at_least rest (acc * 256 + d)
+
+lemma number_nat_bytes k acc : k~Nat, acc~Nat, acc >= 1
+    ensures number_of (nat_bytes k) acc > k * acc
+    proof
+        decreasing k
+        if k < 128
+            auto
+        else
+            let a = acc * 256 + 128 + k % 128
+            let q = k / 128
+            have number_nat_bytes q a
+            have k == 128 * q + k % 128
+            have q >= 1
+            have q * a >= q * (acc * 256)
+            have q * (acc * 256) >= acc * 128 * q + acc * 128
+            have acc * 128 > acc * (k % 128)
+            have k * acc == acc * 128 * q + acc * (k % 128)
+            have nat_bytes k == (128 + k % 128) :: nat_bytes q
+            have number_of ((128 + k % 128) :: nat_bytes q) acc == number_of (nat_bytes q) (acc * 256 + (128 + k % 128))
+            have acc * 256 + (128 + k % 128) == a
+            have number_of (nat_bytes k) acc == number_of (nat_bytes q) a
+            have number_of (nat_bytes q) a > q * a
+
+# Whether every array number written in `v` is less than `b`.
+fn arrays_below v b -> r : v~Value, b~Nat, r~Bool
+    decreasing value_size v
+    match v
+        Sequence xs      -> all_arrays_below xs b
+        Constructed _ fs -> all_arrays_below fs b
+        ArrayElem k      -> k < b
+        _                -> True
+
+fn all_arrays_below vs b -> r : vs~List Value, b~Nat, r~Bool
+    decreasing values_size vs
+    match vs
+        []        -> True
+        v :: rest -> arrays_below v b and all_arrays_below rest b
+
+lemma inner_below v es acc : v~Value, es~List Nat, acc~Nat, acc >= 1
+    ensures arrays_below v (number_of (value_bytes v ++ es) acc)
+    proof
+        decreasing value_size v
+        match v
+            Sequence xs      ->
+                let head = 2 :: nat_bytes (list.length xs)
+                have value_bytes v == head ++ values_bytes xs
+                have list.append_assoc head (values_bytes xs) es
+                have number_append head (values_bytes xs ++ es) acc
+                have number_at_least head acc
+                have all_inner_below xs es (number_of head acc)
+            Constructed k fs ->
+                let head = 3 :: nat_bytes k ++ nat_bytes (list.length fs)
+                have list.append_assoc head (values_bytes fs) es
+                have number_append head (values_bytes fs ++ es) acc
+                have number_at_least head acc
+                have all_inner_below fs es (number_of head acc)
+            ArrayElem k      ->
+                have value_bytes v == 5 :: nat_bytes k
+                have number_append (5 :: nat_bytes k) es acc
+                have number_of (5 :: nat_bytes k) acc == number_of (nat_bytes k) (acc * 256 + 5)
+                have number_nat_bytes k (acc * 256 + 5)
+                have number_at_least es (number_of (nat_bytes k) (acc * 256 + 5))
+                have k * (acc * 256 + 5) >= k
+            _                -> auto
+
+lemma all_inner_below vs es acc : vs~List Value, es~List Nat, acc~Nat, acc >= 1
+    ensures all_arrays_below vs (number_of (values_bytes vs ++ es) acc)
+    proof
+        decreasing values_size vs
+        match vs
+            []        -> auto
+            v :: rest ->
+                have list.append_assoc (value_bytes v) (values_bytes rest) es
+                have inner_below v (values_bytes rest ++ es) acc
+                have number_append (value_bytes v) (values_bytes rest ++ es) acc
+                have number_at_least (value_bytes v) acc
+                have all_inner_below rest es (number_of (value_bytes v) acc)
+
+fn stores_below st b -> r : st~List (Value, Value), b~Nat, r~Bool
+    match st
+        []             -> True
+        (j, x) :: rest -> arrays_below j b and arrays_below x b and stores_below rest b
+
+lemma stores_inner_below st es acc : st~List (Value, Value), es~List Nat, acc~Nat, acc >= 1
+    ensures stores_below st (number_of (stores_bytes st ++ es) acc)
+    proof
+        match st
+            []             -> auto
+            (j, x) :: rest ->
+                let after = stores_bytes rest ++ es
+                have list.append_assoc (value_bytes j) (value_bytes x) (stores_bytes rest)
+                have list.append_assoc (value_bytes j) (value_bytes x ++ stores_bytes rest) es
+                have list.append_assoc (value_bytes x) (stores_bytes rest) es
+                have stores_bytes st ++ es == value_bytes j ++ (value_bytes x ++ after)
+                have inner_below j (value_bytes x ++ after) acc
+                let aj = number_of (value_bytes j) acc
+                have number_append (value_bytes j) (value_bytes x ++ after) acc
+                have number_at_least (value_bytes j) acc
+                have inner_below x after aj
+                have number_append (value_bytes x) after aj
+                have number_at_least (value_bytes x) aj
+                have stores_inner_below rest es (number_of (value_bytes x) aj)
+
+# The arrays written in a form number less than it.
+lemma form_below f : f~Form
+    ensures arrays_below f.base (code f) and stores_below f.stores (code f)
+    proof
+        let n = nat_bytes (list.length f.stores)
+        let st = stores_bytes f.stores
+        have code f == number_of (form_bytes f) 1
+        have list.append_assoc (value_bytes f.base) n st
+        have inner_below f.base (n ++ st) 1
+        have number_append (value_bytes f.base ++ n) st 1
+        have number_at_least (value_bytes f.base ++ n) 1
+        have list.append_nil st
+        have stores_inner_below f.stores [] (number_of (value_bytes f.base ++ n) 1)
