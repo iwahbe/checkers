@@ -288,7 +288,7 @@ fn check_sorts sig np ss -> r : sig~Sig, np~Nat, ss~List Sort, r~Result Unit Pro
             check_sorts sig np rest
 
 # `s` with each `Param k` replaced by the `k`-th of `args`.
-export transparent fn instantiate args s -> r : args~List Sort, s~Sort, r~Sort
+export fn instantiate args s -> r : args~List Sort, s~Sort, r~Sort
     match s
         Bool      -> Bool
         Int       -> Int
@@ -585,7 +585,7 @@ export enum Witness
 # accepted before and each of `ws` fits its argument: `e`'s kept witness
 # fitted `e`'s sort when it was accepted (`check_values`, for every
 # `declare-datatypes` of a `Context`), so it fits at these arguments.
-export transparent fn fits sig first np w s -> r : sig~Sig, first~Nat, np~Nat, w~Witness, s~Sort, r~Bool
+export fn fits sig first np w s -> r : sig~Sig, first~Nat, np~Nat, w~Witness, s~Sort, r~Bool
     match (w, s)
         (WTrue, Bool)            -> True
         (WZero, Int)             -> True
@@ -604,7 +604,7 @@ export transparent fn fits sig first np w s -> r : sig~Sig, first~Nat, np~Nat, w
                 and list.length args == list.length sig.datatypes[e].params and fits_all sig first np ws args
         _                        -> False
 
-export transparent fn fits_all sig first np ws ss -> r : sig~Sig, first~Nat, np~Nat, ws~List Witness, ss~List Sort, r~Bool
+export fn fits_all sig first np ws ss -> r : sig~Sig, first~Nat, np~Nat, ws~List Witness, ss~List Sort, r~Bool
     match (ws, ss)
         ([], [])           -> True
         (w :: wr, s :: sr) -> fits sig first np w s and fits_all sig first np wr sr
@@ -1076,7 +1076,7 @@ fn any_group_in_index used index group ss -> r : used~(Nat -> Nat -> Bool), inde
 fn trues n -> r : n~Nat, r~List Bool
     if n == 0 then [] else True :: trues (n - 1)
 
-export transparent fn params_of count i -> r : count~Nat, i~Nat, r~List Sort
+export fn params_of count i -> r : count~Nat, i~Nat, r~List Sort
     if count == 0 then [] else Param i :: params_of (count - 1) (i + 1)
 
 # having values; `WTrue` (which fits no datatype) where none was found.
@@ -1850,6 +1850,57 @@ export lemma defs_well_sorted c : c~Context
 # of its sort (`smt.model`): the `k`-th element of a list, an `instantiate`
 # of an `instantiate`, a datatype's parameters instantiated.
 
+# What `instantiate`, `fits`, `fits_all` and `datatype_ok` are, for other
+# modules (their bodies are sealed there): `smt.model`'s lemma that every
+# sort has a value unfolds them.
+export lemma instantiate_def args s : args~List Sort, s~Sort
+    ensures instantiate args s
+        == match s
+            Bool      -> Bool
+            Int       -> Int
+            Seq e     -> Seq (instantiate args e)
+            Arr i v   -> Arr (instantiate args i) (instantiate args v)
+            Data d ss -> Data d (list.map (instantiate args) ss)
+            Unin u ss -> Unin u (list.map (instantiate args) ss)
+            Param k   ->
+                match list.head (list.drop k args)
+                    Some a -> a
+                    None   -> Param k
+
+export lemma fits_def sig first np w s : sig~Sig, first~Nat, np~Nat, w~Witness, s~Sort
+    ensures fits sig first np w s
+        == match (w, s)
+            (WTrue, Bool)            -> True
+            (WZero, Int)             -> True
+            (WEmpty, Seq _)          -> True
+            (WElement, Unin _ _)     -> True
+            (WConst v, Arr _ e)      -> fits sig first np v e
+            (WParam k, Param j)      -> k == j and k < np
+            (WCon k fs, Data d args) ->
+                match ctor sig d k
+                    Some c ->
+                        list.length args == list.length sig.datatypes[d].params
+                            and fits_all sig first np fs (list.map (instantiate args) (field_sorts c.fields))
+                    None   -> False
+            (WOf e ws, Data d args)  ->
+                e == d and e < first and e < len sig.datatypes
+                    and list.length args == list.length sig.datatypes[e].params and fits_all sig first np ws args
+            _                        -> False
+
+export lemma fits_all_def sig first np ws ss : sig~Sig, first~Nat, np~Nat, ws~List Witness, ss~List Sort
+    ensures fits_all sig first np ws ss
+        == match (ws, ss)
+            ([], [])           -> True
+            (w :: wr, s :: sr) -> fits sig first np w s and fits_all sig first np wr sr
+            _                  -> False
+
+export lemma datatype_ok_def sig e : sig~Sig, e~Nat
+    ensures datatype_ok sig e
+        == (e < len sig.datatypes and e < len sig.values
+            and ctors_ok sig (list.length sig.datatypes[e].params) sig.datatypes[e].ctors
+            and fits sig e (list.length sig.datatypes[e].params) sig.values[e]
+            (Data e (params_of (list.length sig.datatypes[e].params) 0)))
+
 # The `k`-th element of `xs` mapped is the `k`-th element of `xs`, mapped.
 export lemma nth_map f xs k a : f~(b -> c), xs~List b, k~Nat, a~b, list.head (list.drop k xs) == Some a
     ensures list.head (list.drop k (list.map f xs)) == Some (f a)
@@ -1953,7 +2004,7 @@ export lemma ctor_fields_ok sig np cs k c : sig~Sig, np~Nat, cs~List Ctor, k~Nat
 # Whether datatype `e` of `sig` is as accepting it made it: its
 # constructors' field sorts use only its own parameters, and its kept
 # witness fits its sort with every datatype before it accepted.
-export transparent fn datatype_ok sig e -> r : sig~Sig, e~Nat, r~Bool
+export fn datatype_ok sig e -> r : sig~Sig, e~Nat, r~Bool
     if e < len sig.datatypes and e < len sig.values
         let n = list.length sig.datatypes[e].params
         ctors_ok sig n sig.datatypes[e].ctors and fits sig e n sig.values[e] (Data e (params_of n 0))
