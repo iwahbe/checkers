@@ -1512,17 +1512,6 @@ export fn refutes c goal m -> r : c~Context, goal~Term, m~Model, r~Bool
     term.fact_ok c goal and term.axioms c == [] and defs_run c and without_lambda c goal
         and facts_hold_unfolding c n (term.facts c) and eval_unfolding c n goal == Ok (Truth False)
 
-# Whether the `f`-th function is a definition of `c` and, run as its own
-# body at `vs` (`refutes`' way: `Unfolding`, in `normal_arrays` of `m`)
-# within `k` levels, answers without running out of fuel.
-export fn unfolds_within c m f vs k -> r : c~Context, m~Model, f~Nat, vs~List Value, k~Nat, r~Bool
-    match definition (term.defs c) f
-        Some d ->
-            let n = normal_arrays (term.signature c) m
-            let env = list.reverse (list.map (\v -> Ok v) vs)
-            value (level Unfolding c n k) Unfolding c n env (term.binder_env d.params) d.body != Err OutOfFuel
-        None   -> False
-
 fn facts_hold_unfolding c m ts -> r : c~Context, m~Model, ts~List Term, r~Bool
     match ts
         []        -> True

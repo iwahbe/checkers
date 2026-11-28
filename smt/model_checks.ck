@@ -223,17 +223,6 @@ fn def_at src k -> d : src~Bytes, k~Nat, d~(Nat, Def)
         Some x -> x
         None   -> (0, Def b"" [] Int (App (Num 0) []) False Recursive)
 
-# The number of the `k`-th definition of `src`.
-fn def_number src k -> n : src~Bytes, k~Nat, n~Nat
-    let (f, _) = def_at src k
-    f
-
-# `down`'s body at 10 calls `down` ten levels deep: within 10 levels, not
-# 9. A function that isn't a definition never unfolds.
-check model.unfolds_within (marked G) (fuel 0) (def_number G 0) [Integer 10] 10
-check not (model.unfolds_within (marked G) (fuel 0) (def_number G 0) [Integer 10] 9)
-check not (model.unfolds_within (marked G) (fuel 0) 99 [] 5)
-
 fn axiom_of src k -> a : src~Bytes, k~Nat, a~Axiom
     let (n, d) = def_at src k
     model.definition_axiom n d
