@@ -99,15 +99,3 @@ check not (fits 1 0 (WOf 2 []) L)
 check not (fits 0 0 (WOf 0 []) P)
 check not (fits 2 0 (WCon 1 [WZero, WOf 2 []]) L)
 check not (fits 3 0 (WOf 1 [WTrue]) (Data 1 [Int]))
-
-# The `lambda`s among terms, with the sorts bound around each: nested, under
-# a `let`, inside a bound term, and not under a `let` whose bound term has
-# no sort.
-let YES = term.App (term.Boolean True) []
-let INNER = term.Lam b"y" Bool (term.Var 1)
-let OUTER = term.Lam b"x" Int INNER
-
-check term.lambdas_in (context DATA) [YES, OUTER] == [([], Int, INNER), ([Int], Bool, term.Var 1)]
-check term.lambdas_in (context DATA) [term.Let [(b"z", YES)] INNER] == [([Bool], Bool, term.Var 1)]
-check term.lambdas_in (context DATA) [term.Let [(b"z", OUTER)] YES] == [([], Int, INNER), ([Int], Bool, term.Var 1)]
-check term.lambdas_in (context DATA) [term.Let [(b"z", term.Var 3)] INNER] == []

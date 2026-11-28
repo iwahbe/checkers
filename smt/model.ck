@@ -103,10 +103,9 @@
 #
 # - `checks_sound`, in two statements. The first asks the premises (the
 #   facts; the axioms and definitions' equations, `holds_at`; `arrays_ok`
-#   with `arrays_total`, `lambda`'s for the `lambda`s among those terms
-#   only; every function of the model total) only at the values of the
-#   finite set of terms the certificate uses: every
-#   satisfiable context has such a model, so it is never vacuous. The
+#   with `arrays_total` but `lambda`'s; every function of the model total)
+#   only at the values of the finite set of terms the certificate uses:
+#   every satisfiable context has such a model, so it is never vacuous. The
 #   second, a corollary in one step, asks them at all values. Either way the
 #   conclusion is that the goal `holds`.
 # - Monotonicity: a definite answer in a model is the answer in every model
