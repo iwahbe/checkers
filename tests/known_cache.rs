@@ -202,3 +202,124 @@ fn computed_types_are_kept_across_builds() {
     assert_eq!(computed, first, "an edit of `walk` computes the type again, and only it");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A constant whose value is a lambda's closure: its code (a lambda in
+/// `adder`'s body) and the value it captured. And a function it never runs.
+fn closure(body: &str, other: &str) -> String {
+    format!(
+        "module p
+
+import std.system (System, ExitCode)
+import std.terminal
+import std.string (debug)
+import std.hint (blackbox)
+
+fn adder n -> f : n~Int, f~(Int -> Int)
+    let m = n * n
+    \\x -> {body}
+
+fn other x -> r : x~Nat, r~Nat
+    {other}
+
+let BY_TWO = adder 2
+
+export fn main args sys -> code : args~List String, sys~System, code~ExitCode
+    terminal.print_line (debug (BY_TWO (blackbox 3))) sys.term
+    terminal.print_line (debug (other (len args))) sys.term
+    Success
+"
+    )
+}
+
+#[test]
+fn closures_are_kept_across_builds() {
+    let dir = scratch("closure");
+    std::fs::write(dir.join("p.ck"), closure("x + m", "x + 1")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "7\n1\n");
+    assert!(computed.iter().any(|c| c == "BY_TWO"), "the first build computes `BY_TWO`: {computed:?}");
+
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "7\n1\n");
+    assert!(computed.is_empty(), "the next build reuses every value, but computed {computed:?}");
+
+    // A function the closure doesn't run: still reused.
+    std::fs::write(dir.join("p.ck"), closure("x + m", "x + 2")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "7\n2\n");
+    assert!(computed.is_empty(), "an edit elsewhere keeps it, but computed {computed:?}");
+
+    // The function whose lambda it is: computed again, with its new code.
+    std::fs::write(dir.join("p.ck"), closure("x * m", "x + 2")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "12\n2\n");
+    assert_eq!(computed, ["BY_TWO"], "an edit of `adder` computes `BY_TWO` again, and only it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Calls folding computes whose values are functions: a lambda's closure
+/// with the value it captured (`adder 2`), and a function given an
+/// argument (`plus 2`). And a function neither runs.
+fn folded_functions(body: &str, other: &str) -> String {
+    format!(
+        "module p
+
+import std.system (System, ExitCode)
+import std.terminal
+import std.string (debug)
+import std.hint (blackbox)
+
+fn adder n -> f : n~Int, f~(Int -> Int)
+    \\x -> {body}
+
+fn plus a b -> c : a~Int, b~Int, c~Int
+    a + b
+
+fn twice f -> g : f~(Int -> Int), g~(Int -> Int)
+    f
+
+fn pick b -> f : b~Bool, f~(Int -> Int)
+    if b then adder 2 else twice (plus 2)
+
+fn other x -> r : x~Nat, r~Nat
+    {other}
+
+export fn main args sys -> code : args~List String, sys~System, code~ExitCode
+    terminal.print_line (debug ((pick (blackbox True)) 3)) sys.term
+    terminal.print_line (debug ((pick (blackbox False)) 3)) sys.term
+    terminal.print_line (debug (other (len args))) sys.term
+    Success
+"
+    )
+}
+
+#[test]
+fn folded_functions_are_kept_across_builds() {
+    let dir = scratch("folded-functions");
+    let folded = |computed: &[String]| computed.iter().filter(|c| c.ends_with(", folded")).cloned().collect::<Vec<_>>();
+    std::fs::write(dir.join("p.ck"), folded_functions("x + n", "x + 1")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "5\n5\n1\n");
+    let first = folded(&computed);
+    for f in ["`adder`", "`plus`"] {
+        assert!(first.iter().any(|c| c.contains(f)), "the first build folds the call of {f}: {computed:?}");
+    }
+
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "5\n5\n1\n");
+    assert!(computed.is_empty(), "the next build reuses every value, but computed {computed:?}");
+
+    // A function the calls don't run: still reused.
+    std::fs::write(dir.join("p.ck"), folded_functions("x + n", "x + 2")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "5\n5\n2\n");
+    assert!(computed.is_empty(), "an edit elsewhere keeps them, but computed {computed:?}");
+
+    // The function whose lambda it is: computed again, with its new code.
+    std::fs::write(dir.join("p.ck"), folded_functions("x * n", "x + 2")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "6\n5\n2\n");
+    let again = folded(&computed);
+    assert!(again.len() == 1 && again[0].contains("`adder`"), "an edit of `adder` computes its call again, and only it: {computed:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

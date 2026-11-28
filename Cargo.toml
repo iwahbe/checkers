@@ -46,11 +46,6 @@ target-lexicon = "0.13.5"
 [dev-dependencies]
 cranelift-codegen = { version = "0.137.1", features = ["x86", "arm64"] }
 
-# `wait4` for a child's peak memory in tests/scaling.rs; already a dependency
-# of the runtime (rt/).
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-libc = "0.2"
-
 # Z3, built from source (`static-z3`), is optimized in development builds
 # too: a debug Z3 is ~15 times slower, which can push a test's query past
 # the safety timeout (SAFETY_MS) on a busy machine.

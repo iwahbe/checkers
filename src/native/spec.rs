@@ -84,6 +84,9 @@ pub struct Copy {
     /// For each parameter of the copy, the binder of `of` it is (`None`:
     /// one for a variable of a function put in).
     pub binders: Vec<Option<usize>>,
+    /// The definition a runtime error in its code names: `of`, unless that
+    /// is private to another package than the program's (`report`).
+    pub owner: Option<DefId>,
 }
 
 /// A copy's code.
@@ -111,11 +114,14 @@ pub struct Specs {
     /// A mirror of another program's copies (`mirror`): it makes none of
     /// its own, so their numbers stay the other program's.
     pub frozen: bool,
+    /// The definitions no runtime error names (`Globals::hidden`), as the
+    /// program was when this table was made.
+    hidden: std::collections::HashSet<u32>,
 }
 
 impl Specs {
-    pub fn new(base: u32) -> Specs {
-        Specs { base, memo: HashMap::new(), copies: Vec::new(), kept: HashMap::new(), for_values: false, frozen: false }
+    pub fn new(base: u32, hidden: std::collections::HashSet<u32>) -> Specs {
+        Specs { base, memo: HashMap::new(), copies: Vec::new(), kept: HashMap::new(), for_values: false, frozen: false, hidden }
     }
 
     /// The copy definition `d` is, if it is one.
@@ -134,6 +140,59 @@ impl Specs {
     pub fn origin(&self, d: u32) -> u32 {
         self.copy(d).map_or(d, |c| c.of.0)
     }
+
+    /// The definition a runtime error in `d`'s code names (`None`: no
+    /// definition's, as in a `check`, or a constant no runtime error names,
+    /// which `report` doesn't copy).
+    pub fn owner(&self, d: u32) -> Option<DefId> {
+        match self.copy(d) {
+            Some(c) => c.owner,
+            None => (!self.hidden(DefId(d))).then_some(DefId(d)),
+        }
+    }
+
+    /// Whether `d` is private to another package than the program's, so
+    /// that no runtime error names it (§6 rule 9).
+    pub fn hidden(&self, d: DefId) -> bool {
+        self.hidden.contains(&d.0)
+    }
+}
+
+/// The function to call for `f` in code whose runtime errors name `owner`:
+/// `f`, or if `f` is private to another package than the program's (§6
+/// rule 9), its copy whose own runtime errors name `owner` too. In the
+/// copy, `f`'s calls of such functions call their copies for `owner` in
+/// turn, and its lambdas, and functions put into copies made in it, are
+/// code of `owner` (`ir::Compiler::owner`). So a runtime error names the
+/// function the program can refer to whose call led to it: the one its
+/// own code called, of the package `f` is in. One copy per function and
+/// owner (memoized): recursion uses the copy.
+pub fn report(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId) -> DefId {
+    let mut t = cx.table.borrow_mut();
+    if !t.hidden(f) || t.frozen {
+        return f;
+    }
+    let key = format!("report|{}|{:?}", f.0, owner.map(|o| o.0));
+    if let Some(id) = t.memo.get(&key) {
+        return DefId(*id);
+    }
+    // A builtin has no code of its own: its errors name its caller already.
+    let Some(body) = crate::native::ir::body_of(g, cx.staged, f) else { return f };
+    let mut n = 0;
+    let mut b = &body;
+    while let Tm::Lam(_, _, _, x) = b {
+        n += 1;
+        b = x;
+    }
+    // A constant is computed once, so it isn't copied: no runtime error
+    // in its code names a function (`Specs::owner`).
+    if n == 0 {
+        return f;
+    }
+    let id = t.base + t.copies.len() as u32;
+    t.copies.push(Copy { of: f, body: Body::Term(body), depth: cx.depth, binders: (0..n).map(Some).collect(), owner });
+    t.memo.insert(key, id);
+    DefId(id)
 }
 
 /// Where a `Compiler` makes copies: the table, staged bodies, and how deep
@@ -157,6 +216,13 @@ fn size(t: &Tm, limit: usize) -> usize {
         n > limit
     });
     n
+}
+
+/// A closed type whose arrays are packed (`Bytes`'s `U8`): code indexing
+/// an array of it reads the element in place at that layout, rather than
+/// asking the array's header, so a function given it gets a copy.
+fn packed_type(g: &Globals, t: &Tm) -> bool {
+    crate::core::layout_of(g, &crate::core::eval(g, &Default::default(), t)).is_ok_and(|l| l != checkers_rt::array::Layout::Words as u8)
 }
 
 /// A dictionary built by instances' functions from types and other such
@@ -260,11 +326,15 @@ pub fn small(t: &Tm) -> bool {
 }
 
 /// A known function with each lambda's body (under all its parameters)
-/// marked as code of `owner`, unless it is marked already.
-fn mark(t: &Tm, owner: Option<DefId>) -> Tm {
+/// marked as code of `owner`, unless it is marked already; and each
+/// definition's function no runtime error names (`hidden`), so that the
+/// copy calls that function's copy for `owner` (`report`), as the code
+/// passing it would.
+fn mark(t: &Tm, owner: Option<DefId>, hidden: &dyn Fn(DefId) -> bool) -> Tm {
     match t {
         Tm::Lam(..) => mark_body(t, owner),
-        Tm::App(f, a, i, m) => Tm::App(Rc::new(mark(f, owner)), Rc::new(mark(a, owner)), *i, *m),
+        Tm::Def(d) if hidden(*d) => mark_body(t, owner),
+        Tm::App(f, a, i, m) => Tm::App(Rc::new(mark(f, owner, hidden)), Rc::new(mark(a, owner, hidden)), *i, *m),
         _ => t.clone(),
     }
 }
@@ -310,6 +380,8 @@ pub fn known_fn(g: &Globals, staged: Option<&crate::stage::Staged>, t: &Tm) -> b
         args.push((a, *m));
         h = f;
     }
+    // A definition's function marked as code of the one passing it (`mark`).
+    let h = marked(h).map_or(h, |(_, x)| x);
     match h {
         Tm::Lam(..) => args.is_empty(),
         Tm::Def(d) if !g.well_known.dict_fns.contains(d) => {
@@ -369,7 +441,17 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
         return None;
     }
     let fun = |a: &Tm| small_fn(g, cx.staged, a);
-    if !args.iter().any(|(a, m)| *m != Mult::Zero && (closed_dict(g, a) || fun(a))) {
+    // Which parameters are types (the rest of the erased ones are proofs,
+    // never evaluated here).
+    let mut types = Vec::new();
+    let mut ty = g.defs.get(f.0 as usize).map(|i| &i.ty);
+    while let Some(Tm::Pi(_, _, _, dom, cod)) = ty {
+        let env = (0..types.len()).map(crate::core::Val::var).collect();
+        types.push(matches!(crate::core::force_meta(g, crate::core::eval(g, &env, dom)), crate::core::Val::Univ(_)));
+        ty = Some(cod);
+    }
+    let packed = |j: usize, a: &Tm| types.get(j) == Some(&true) && max_var(a).is_none() && size(a, MAX_ARG) <= MAX_ARG && packed_type(g, a);
+    if !args.iter().enumerate().any(|(j, (a, m))| if *m == Mult::Zero { packed(j, a) } else { closed_dict(g, a) || fun(a) }) {
         return None;
     }
     let body = crate::native::ir::body_of(g, cx.staged, f)?;
@@ -396,12 +478,12 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
                 let a = &a;
                 free_in_order(a, 0, &mut caps);
                 kept[j] = keeps(g, cx, f, j);
-                Some(mark(a, owner))
+                Some(mark(a, owner, &|d| cx.table.borrow().hidden(d)))
             }
             _ => None,
         })
         .collect();
-    if !pick.iter().zip(args).any(|(p, (_, m))| p.is_some() && *m != Mult::Zero) {
+    if !pick.iter().zip(args).enumerate().any(|(j, (p, (a, m)))| p.is_some() && (*m != Mult::Zero || packed(j, a))) {
         return None;
     }
     // Cap `j` is variable `m - 1 - j` under the copy's `m` parameters for them.
@@ -417,8 +499,10 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
     if m == 0 && n == k && gone.iter().all(|p| *p) {
         gone[k - 1] = false;
     }
-    let key = format!("{}|{}|{:?}", f.0, m, pick);
     let mut t = cx.table.borrow_mut();
+    // A function no runtime error names: a copy for each owner (`report`).
+    let named = if t.hidden(f) { owner } else { Some(f) };
+    let key = format!("{}|{}|{:?}|{:?}", f.0, m, pick, named.map(|o| o.0));
     let id = match t.memo.get(&key) {
         Some(id) => *id,
         None => {
@@ -430,7 +514,7 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
             // The parameters not put in, the variables' (`caps`), then those
             // after the first `k`.
             let binders = (0..k).filter(|j| !gone[*j]).map(Some).chain((0..m).map(|_| None)).chain((k..n).map(Some)).collect();
-            t.copies.push(Copy { of: f, body: Body::Term(put_in(&body, &picked, &kept, &gone, m)), depth: cx.depth + 1, binders });
+            t.copies.push(Copy { of: f, body: Body::Term(put_in(&body, &picked, &kept, &gone, m)), depth: cx.depth + 1, binders, owner: named });
             t.memo.insert(key, id);
             id
         }
@@ -679,7 +763,8 @@ pub fn specialize_folded(
             };
             let binders = (0..n).filter(|j| put[*j].is_none()).map(|j| from.get(j).copied().flatten()).collect();
             let code = Arc::new(put_in_code(body, &put));
-            t.copies.push(Copy { of: DefId(of), body: Body::Folded { from: h, put, code }, depth: depth + 1, binders });
+            let owner = t.owner(h);
+            t.copies.push(Copy { of: DefId(of), body: Body::Folded { from: h, put, code }, depth: depth + 1, binders, owner });
             t.memo.insert(key, id);
             id
         }

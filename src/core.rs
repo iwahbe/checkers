@@ -322,6 +322,14 @@ pub struct DefInfo {
     pub opaque: bool,
     /// Sealed by its module (#537): does not unfold outside it.
     pub sealed: bool,
+    /// Unfolds without spending fuel, so a type it computes is computed to
+    /// completion (§8.9): it can't recurse (an alias, whose cycles are
+    /// errors, #557; a constant; one the compiler makes), or it is a
+    /// function returning a type that is proved, its termination too
+    /// (`Elab::settle_type_fn`). Any other function may recurse without end
+    /// (#711), so it takes fuel, as the type checker's evaluation of a
+    /// function not proved does.
+    pub free: bool,
     /// Binder positions (over the whole Π-type) that are `comptime` (#541).
     /// A function with any is a compile-time function: staging inlines it.
     pub comptime: Vec<usize>,
@@ -399,6 +407,12 @@ pub struct Globals {
     /// known. Neither the type checker, staging nor folding computes a call
     /// of one.
     pub run_time_only: RefCell<std::collections::HashSet<DefId>>,
+    /// The definitions private to another package than the program's (§6
+    /// rule 9), which no runtime error names: native code reports one in
+    /// such a function's code as in the function the program can refer to
+    /// that led to it (`native::spec::report`). Set once the program is
+    /// checked (`Elab::hide_private`); empty before.
+    pub hidden: RefCell<std::collections::HashSet<DefId>>,
     /// Every obligation of the program is proved, and none of its facts is
     /// assumed by an `admit` (§13.3): native code compiled from here relies
     /// on the proofs, with no run-time checks of guarded operations. False
@@ -499,6 +513,7 @@ impl Globals {
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
             run_time_only: RefCell::new(std::collections::HashSet::new()),
+            hidden: RefCell::new(std::collections::HashSet::new()),
             ids: RefCell::new(Env::new()),
             proved: false,
             fold_work: std::cell::Cell::new(None),
@@ -765,10 +780,11 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
     if info.opaque || info.sealed {
         return None;
     }
-    // Fuel bounds unfolding of functions. A type alias can't recurse
-    // (cycles are errors, #557), so unfolding it always terminates and costs
-    // none: running out of fuel must not stop `U8` from being `Nat`.
-    if !is_type_former(&info.ty) {
+    // Fuel bounds unfolding of functions. A definition that can't recurse,
+    // or a type function proved to end, costs none: running out of fuel
+    // must not stop `U8` from being `Nat`, nor a type from computing. A type
+    // function not proved may never end (#711): it takes fuel.
+    if !info.free {
         if g.fuel.get() == 0 {
             return None;
         }

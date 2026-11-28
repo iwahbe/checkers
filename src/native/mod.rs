@@ -754,6 +754,24 @@ mod tests {
         })
     }
 
+    /// An operation computed when compiling whose value is a function is
+    /// static data (§8.9, tests/run/folded_function.ck): `pick`'s arms are
+    /// lambdas' closures laid out in the program, so its code is that of
+    /// `by_hand`, which returns constants; `pick_partial`'s, a function
+    /// given an argument, are laid out the same way, so its code is that of
+    /// `by_hand_partial`. The code names the data it loads: equal values
+    /// are the same object.
+    #[test]
+    fn functions_computed_when_compiling_are_static() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("folded_function", triple);
+                assert_eq!(code_of(&code, "pick"), code_of(&code, "by_hand"), "{triple}");
+                assert_eq!(code_of(&code, "pick_partial"), code_of(&code, "by_hand_partial"), "{triple}");
+            }
+        })
+    }
+
     /// Code put into a function from another (`at`: a small function
     /// inlined) compiles as the same code written there: a comparison's
     /// `Bool` is branched on, not built and dropped, and a remainder by a
@@ -783,6 +801,26 @@ mod tests {
                     assert!(!c.contains("ext_name"), "{triple}: `{f}` calls the runtime:\n{c}");
                 }
                 assert!(code_of(&code, "product").contains("ext_name"), "{triple}: `product` without its overflow path");
+            }
+        })
+    }
+
+    /// A loop over bytes (tests/run/loop_code.ck, `walk`) calls the runtime
+    /// only where a value isn't what its code expects: an argument that
+    /// isn't an array (`ck_len`) and an index that isn't a small integer
+    /// (`ckw_cmp`). Reading the elements, `i + 1` and the `Bool` of the
+    /// `and` need none. The same loop at a type parameter, called at
+    /// `Bytes` (`same`), is a copy for `U8`: the same code.
+    #[test]
+    fn loops_over_bytes_need_no_runtime() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("loop_code", triple);
+                let walk = code_of(&code, "walk");
+                let called: std::collections::BTreeSet<&str> =
+                    walk.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| w.starts_with("ck_") || w.starts_with("ckw_")).collect();
+                assert!(called.iter().all(|f| ["ck_len", "ckw_cmp"].contains(f)), "{triple}: `walk` calls {called:?}:\n{walk}");
+                assert_eq!(code_of(&code, "same"), walk, "{triple}");
             }
         })
     }

@@ -505,24 +505,76 @@ fn cond_copies(x: &Sx, index: &HashMap<&str, usize>, clean: &[bool], names: &mut
     }
 }
 
-/// `binder` (`lam` or `all` followed by a mark) is named by height: one
-/// more than the greatest of the binders inside it, and 0 if there are none,
-/// so a term is spelled the same wherever it occurs in a query, whatever it is
-/// inside. The binders of the lambdas and `forall`s around it are still marks,
-/// so none is captured: a binder's height is greater than those inside it.
+/// The binder `text` opens (`lam` or `all` followed by `mark`) named by
+/// height: one more than the greatest of the binders inside it that one of
+/// its own variables occurs under, and 0 if there are none. Its name depends
+/// only on where its variables are, so a term is spelled the same wherever it
+/// occurs in a query, whatever it is inside (#412), and whatever terms Z3
+/// puts for the variables of a definition or an axiom it is in (#713): Z3
+/// tells lambdas apart by their binders' names, and a term put for a variable
+/// never mentions the binder's own. None is captured: a variable's binder is
+/// higher than every binder it occurs under. The binders of the lambdas and
+/// `forall`s around it are still marks.
 fn name_binders(text: &str, mark: &str) -> String {
+    let own = [format!("|lam{mark}."), format!("|all{mark}.")];
+    // The height of the binder a binding list's first variable names.
+    let height_of = |sym: &str| -> Option<usize> {
+        let rest = sym.strip_prefix("|lam").or_else(|| sym.strip_prefix("|all"))?;
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        (digits > 0 && rest[digits..].starts_with('.')).then(|| rest[..digits].parse().ok())?
+    };
+    let b = text.as_bytes();
+    // One entry per open parenthesis: the height of the binder it opens.
+    let mut open: Vec<Option<usize>> = Vec::new();
+    // The parenthesis that opens a binder whose variables aren't read yet.
+    let mut pending: Option<usize> = None;
+    let mut after_open = false;
     let mut height = 0;
-    for prefix in ["|lam", "|all"] {
-        let mut rest = text;
-        while let Some(k) = rest.find(prefix) {
-            rest = &rest[k + prefix.len()..];
-            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-            if digits > 0 && rest[digits..].starts_with('.') {
-                height = height.max(rest[..digits].parse::<usize>().unwrap_or(0) + 1);
+    let mut i = 0;
+    while i < b.len() {
+        let start = i;
+        match b[i] {
+            b'(' => {
+                open.push(None);
+                after_open = true;
+                i += 1;
+                continue;
+            }
+            b')' => {
+                open.pop();
+                i += 1;
+            }
+            c if c.is_ascii_whitespace() => {
+                i += 1;
+                continue;
+            }
+            b'|' => {
+                i += 1 + b[i + 1..].iter().position(|&c| c == b'|').map_or(b.len() - i - 1, |k| k + 1);
+                let sym = &text[start..i];
+                if let Some(p) = pending.take() {
+                    open[p] = height_of(sym);
+                } else if own.iter().any(|o| sym.starts_with(o.as_str())) {
+                    if let Some(h) = open.iter().flatten().max() {
+                        height = height.max(h + 1);
+                    }
+                }
+            }
+            b'"' => {
+                // A string literal (`""` inside is two of these).
+                i += 1 + b[i + 1..].iter().position(|&c| c == b'"').map_or(b.len() - i - 1, |k| k + 1);
+            }
+            _ => {
+                while i < b.len() && !b[i].is_ascii_whitespace() && !matches!(b[i], b'(' | b')' | b'|' | b'"') {
+                    i += 1;
+                }
+                if after_open && matches!(&text[start..i], "lambda" | "forall" | "exists") {
+                    pending = Some(open.len() - 1);
+                }
             }
         }
+        after_open = false;
     }
-    text.replace(&format!("|lam{mark}."), &format!("|lam{height}.")).replace(&format!("|all{mark}."), &format!("|all{height}."))
+    text.replace(&own[0], &format!("|lam{height}.")).replace(&own[1], &format!("|all{height}."))
 }
 
 /// A `lambda`, `forall` or `exists`.

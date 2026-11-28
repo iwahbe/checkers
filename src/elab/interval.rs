@@ -545,6 +545,7 @@ impl Elab {
         let info = &mut self.g.defs[did.0 as usize];
         info.body = Some(base);
         info.ty = Tm::Univ(0);
+        info.free = true;
         self.alias_preds.insert(did, preds);
         self.alias_subject.insert(did, Rc::from("n"));
         self.g.well_known.layouts.push((did, layout_for(r)));
