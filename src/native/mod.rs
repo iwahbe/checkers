@@ -787,6 +787,26 @@ mod tests {
         })
     }
 
+    /// A loop over bytes (tests/run/loop_code.ck, `walk`) calls the runtime
+    /// only where a value isn't what its code expects: an argument that
+    /// isn't an array (`ck_len`) and an index that isn't a small integer
+    /// (`ckw_cmp`). Reading the elements, `i + 1` and the `Bool` of the
+    /// `and` need none. The same loop at a type parameter, called at
+    /// `Bytes` (`same`), is a copy for `U8`: the same code.
+    #[test]
+    fn loops_over_bytes_need_no_runtime() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("loop_code", triple);
+                let walk = code_of(&code, "walk");
+                let called: std::collections::BTreeSet<&str> =
+                    walk.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| w.starts_with("ck_") || w.starts_with("ckw_")).collect();
+                assert!(called.iter().all(|f| ["ck_len", "ckw_cmp"].contains(f)), "{triple}: `walk` calls {called:?}:\n{walk}");
+                assert_eq!(code_of(&code, "same"), walk, "{triple}");
+            }
+        })
+    }
+
     /// A value known at compile time compiles as the same value written as
     /// a literal (tests/run/known_bounds.ck): as a bound, `a < math.pow 2
     /// 32` as `a < 4294967296`, `a < LIMIT` as `a < 1000`, and a sealed

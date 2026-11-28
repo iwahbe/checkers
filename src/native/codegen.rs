@@ -150,7 +150,26 @@ struct St {
     /// emitted now, by its operands. A `match`'s arms each start from what
     /// was known before it.
     quots: HashMap<Pair, Quot>,
+    /// What the headers of a loop's arrays say (`loop_arrays`), read once
+    /// before it, by the loop's value of each.
+    arrays: HashMap<Value, ArrayFacts>,
 }
+
+/// An array's header (or any value's, when it isn't one), read once.
+#[derive(Clone, Copy)]
+struct ArrayFacts {
+    /// Its length's word, if it is bytes or an array; else 0, which is no
+    /// integer's word.
+    len: Value,
+    /// Where its elements are, if it is bytes or an array of words (with
+    /// `WORDS_BIT` set, which no address has); else 0.
+    data: Value,
+}
+
+/// Marks an array of words' elements in `ArrayFacts::data`: user space's
+/// addresses are below 2^63 (at most 57 bits, on the machines code is
+/// generated for).
+const WORDS_BIT: i64 = i64::MIN;
 
 impl St {
     fn new(vars: Vec<Option<Value>>, owner: u32, pairs: HashSet<Pair>) -> St {
@@ -166,6 +185,7 @@ impl St {
             this: None,
             pairs,
             quots: HashMap::new(),
+            arrays: HashMap::new(),
         }
     }
 }
@@ -248,42 +268,108 @@ impl Wide {
     }
 }
 
+/// Each expression in `e`, `e` first: what code is emitted for (not a
+/// literal pattern's own expression).
+fn each_e(e: &E, f: &mut dyn FnMut(&E)) {
+    f(e);
+    match e {
+        E::Borrow { args, .. } | E::Call { args, .. } | E::Tuple(args) | E::Par(args) | E::Multi(args) => args.iter().for_each(|a| each_e(a, f)),
+        E::Apply { f: g, args, .. } => {
+            each_e(g, f);
+            args.iter().for_each(|a| each_e(a, f))
+        }
+        E::Con { fields, .. } => fields.iter().for_each(|a| each_e(a, f)),
+        E::Let(_, a, b) | E::LetMulti(_, a, b) => {
+            each_e(a, f);
+            each_e(b, f)
+        }
+        E::Dup(_, b) | E::Drop(_, b) | E::DropReuse(_, _, _, b) | E::At(_, b) => each_e(b, f),
+        E::Case { arms, lits, default, .. } => {
+            arms.iter().for_each(|a| each_e(&a.body, f));
+            lits.iter().for_each(|(_, b)| each_e(b, f));
+            if let Some(d) = default {
+                each_e(d, f)
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The operands of each `/` that a `%` has too, in `e`.
 fn div_pairs(e: &E) -> HashSet<Pair> {
-    fn walk(e: &E, divs: &mut HashSet<Pair>, rems: &mut HashSet<Pair>) {
-        match e {
-            E::Borrow { op: BOp::Prim(p @ (Op::Div | Op::Rem), _), args, .. } => {
-                if let [Some(x), Some(y)] = [Atom::of(&args[0]), Atom::of(&args[1])] {
-                    if *p == Op::Div { divs } else { rems }.insert((x, y));
-                }
-            }
-            E::Borrow { args, .. } | E::Call { args, .. } | E::Tuple(args) | E::Par(args) | E::Multi(args) => {
-                args.iter().for_each(|a| walk(a, divs, rems))
-            }
-            E::Apply { f, args, .. } => {
-                walk(f, divs, rems);
-                args.iter().for_each(|a| walk(a, divs, rems))
-            }
-            E::Con { fields, .. } => fields.iter().for_each(|a| walk(a, divs, rems)),
-            E::Let(_, a, b) | E::LetMulti(_, a, b) => {
-                walk(a, divs, rems);
-                walk(b, divs, rems)
-            }
-            E::Dup(_, b) | E::Drop(_, b) | E::DropReuse(_, _, _, b) | E::At(_, b) => walk(b, divs, rems),
-            E::Case { arms, lits, default, .. } => {
-                arms.iter().for_each(|a| walk(&a.body, divs, rems));
-                lits.iter().for_each(|(_, b)| walk(b, divs, rems));
-                if let Some(d) = default {
-                    walk(d, divs, rems)
-                }
-            }
-            _ => {}
-        }
-    }
     let (mut divs, mut rems) = (HashSet::new(), HashSet::new());
-    walk(e, &mut divs, &mut rems);
+    each_e(e, &mut |e| {
+        if let E::Borrow { op: BOp::Prim(p @ (Op::Div | Op::Rem), _), args, .. } = e {
+            if let [Some(x), Some(y)] = [Atom::of(&args[0]), Atom::of(&args[1])] {
+                if *p == Op::Div { &mut divs } else { &mut rems }.insert((x, y));
+            }
+        }
+    });
     divs.retain(|p| rems.contains(p));
     divs
+}
+
+/// The parameters of function `me` (`params`) that a loop over its body
+/// reads the length or elements of (`len xs`, `xs[i]`) and that every
+/// call of itself passes on unchanged: what their headers say is the same
+/// at each turn of the loop.
+fn loop_arrays(me: u32, params: &[V], body: &E) -> Vec<V> {
+    let mut kept = vec![true; params.len()];
+    let mut read = HashSet::new();
+    let mut looped = false;
+    each_e(body, &mut |e| match e {
+        // Every call of itself, in tail position or not: emitted in tail
+        // position, it jumps back to the loop's start.
+        E::Call { f, args, .. } if *f == me => {
+            looped = true;
+            for (k, a) in args.iter().enumerate() {
+                if !matches!(a, E::Var(v) if Some(v) == params.get(k)) {
+                    kept[k] = false;
+                }
+            }
+        }
+        E::Borrow { op: BOp::Prim(Op::Len | Op::Index, _), args, .. } => {
+            if let Some(E::Var(v)) = args.first() {
+                read.insert(*v);
+            }
+        }
+        _ => {}
+    });
+    if !looped {
+        return Vec::new();
+    }
+    params.iter().zip(kept).filter(|(v, k)| *k && read.contains(*v)).map(|(v, _)| *v).collect()
+}
+
+/// The machine code `ctx` holds as text, each function it calls named
+/// by its symbol (`ck_len`) rather than its number in the function.
+fn named_code(m: &impl Module, ctx: &cranelift_codegen::Context) -> String {
+    let mut code = ctx.compiled_code().and_then(|c| c.vcode.clone()).unwrap_or_default();
+    // Longest numbers first, so `userextname1` doesn't rename the start
+    // of `userextname12`.
+    let mut names: Vec<(String, String)> = ctx
+        .func
+        .params
+        .user_named_funcs()
+        .iter()
+        .map(|(r, n)| {
+            let decls = m.declarations();
+            // `cranelift_module` names functions in namespace 0, data in 1.
+            let name = if n.namespace == 1 {
+                let id = DataId::from_u32(n.index);
+                decls.get_data_decl(id).linkage_name(id).to_string()
+            } else {
+                let id = FuncId::from_u32(n.index);
+                decls.get_function_decl(id).linkage_name(id).to_string()
+            };
+            (format!("userextname{}", r.as_u32()), name)
+        })
+        .collect();
+    names.sort_by_key(|(k, _)| std::cmp::Reverse(k.len()));
+    for (k, v) in names {
+        code = code.replace(&k, &v);
+    }
+    code
 }
 
 /// A comparison's condition (`I8`), and what holds when it is true or false.
@@ -292,13 +378,53 @@ struct Cond {
     c: Value,
     /// Small integers when it is true (`x == 3`: `x`), and when false (`x != 3`).
     small_if: [Vec<Value>; 2],
+    /// The comparison `x op y` it is, for the bounds each side gives its
+    /// operands (`i < len xs`: `i` is below the largest length).
+    rel: Option<(Op, Value, Value)>,
 }
 
-enum Mode {
+#[derive(Clone, Copy)]
+enum Mode<'a> {
     /// Return the value: one word, or this many (`unbox`).
     Tail(usize),
     /// Jump to this block with the value.
     Val(ir::Block),
+    /// The value is matched at once on constructors without fields: a
+    /// constructor or a comparison goes straight to its arm (`Join`).
+    Join(&'a Join<'a>),
+}
+
+/// `let x = a` followed by a `match` on `x` whose arms are constructors
+/// without fields (`Bool`s): `a`'s branches that end in a constructor or a
+/// comparison go to the arm it selects, rather than making the word and
+/// testing it again (an `and` of comparisons is a branch on each). An arm
+/// reached from one place in `a` is emitted there, where what led to it
+/// (`i < len xs`) is known; one reached from several, once in a block of
+/// its own.
+struct Join<'a> {
+    x: V,
+    /// `x` is dropped before the `match`.
+    drop_x: bool,
+    arms: &'a [Arm],
+    default: Option<&'a E>,
+    /// Where the arms' values go.
+    outer: Mode<'a>,
+    /// How many of `a`'s branches end in each arm's constructor (the last:
+    /// the default's).
+    reach: Vec<usize>,
+    state: std::cell::RefCell<JoinState>,
+    /// What was known of quotients before `a`, for the arms' own blocks.
+    quots: HashMap<Pair, Quot>,
+}
+
+#[derive(Default)]
+struct JoinState {
+    /// The arms already emitted where they were reached.
+    inline: Vec<bool>,
+    /// Each arm's own block, taking `x`'s word, once one is needed.
+    blocks: Vec<Option<ir::Block>>,
+    /// Where any other value of `a` goes, to be matched: a block taking it.
+    other: Option<ir::Block>,
 }
 
 fn tail_sig(n: usize) -> Signature {
@@ -684,8 +810,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 panic!("native code for `{}`: {e:?}", self.p.funcs[i].name);
             }
             if let Some(d) = &mut self.disasm {
-                let code = ctx.compiled_code().and_then(|c| c.vcode.clone()).unwrap_or_default();
-                d.push((self.p.funcs[i].name.clone(), code));
+                d.push((self.p.funcs[i].name.clone(), named_code(&self.m, &ctx)));
             }
             self.m.clear_context(&mut ctx);
         }
@@ -727,10 +852,20 @@ impl<'p, M: Module> Gen<'p, M> {
                 // The body starts at a block of its own, which a call to
                 // itself in tail position jumps back to.
                 let top = b.create_block();
+                let arrays: Vec<(usize, ArrayFacts)> = loop_arrays(i as u32, &f.params, &f.body)
+                    .into_iter()
+                    .map(|v| {
+                        let k = f.params.iter().position(|p| *p == v).expect("a parameter");
+                        (k, self.array_facts(b, params[k + 1]))
+                    })
+                    .collect();
                 let args: Vec<BlockArg> = params.iter().map(|p| BlockArg::Value(*p)).collect();
                 let params: Vec<Value> = params.iter().map(|_| b.append_block_param(top, I64)).collect();
                 b.ins().jump(top, &args);
                 b.switch_to_block(top);
+                for (k, facts) in arrays {
+                    st.arrays.insert(params[k + 1], facts);
+                }
                 self.tick(b, &mut st);
                 st.this = Some((i as u32, top));
                 for (k, v) in f.params.iter().enumerate() {
@@ -778,6 +913,56 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.ins().return_(&[r]);
             }
         }
+    }
+
+    /// What `x`'s header says, if it is bytes or an array (`ArrayFacts`).
+    fn array_facts(&mut self, b: &mut FunctionBuilder, x: Value) -> ArrayFacts {
+        let obj = b.create_block();
+        let arr = b.create_block();
+        let done = b.create_block();
+        let len = b.append_block_param(done, I64);
+        let data = b.append_block_param(done, I64);
+        let zero = b.ins().iconst(I64, 0);
+        let none = [BlockArg::Value(zero), BlockArg::Value(zero)];
+        let is_ptr = Self::is_ptr(b, x);
+        b.ins().brif(is_ptr, obj, &[], done, &none);
+        b.switch_to_block(obj);
+        let info = b.ins().load(I64, flags(), x, 8);
+        let kind = b.ins().band_imm_s(info, 0xff);
+        let bytes = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_BYTES as i64);
+        let array = b.ins().icmp_imm_s(IntCC::Equal, kind, checkers_rt::array::K_ARRAY as i64);
+        let any = b.ins().bor(bytes, array);
+        b.ins().brif(any, arr, &[], done, &none);
+        b.switch_to_block(arr);
+        let n = b.ins().load(I64, flags(), x, w::HDR as i32);
+        let sh = b.ins().ishl_imm_s(n, 1);
+        let n = b.ins().bor_imm_s(sh, 1);
+        let elems = self.elements(b, x);
+        let is_words = Self::is_word_array(b, info);
+        let tagged = b.ins().bor_imm_s(elems, WORDS_BIT);
+        let e = b.ins().select(is_words, tagged, zero);
+        let d = b.ins().select(bytes, elems, e);
+        b.ins().jump(done, &[BlockArg::Value(n), BlockArg::Value(d)]);
+        b.switch_to_block(done);
+        ArrayFacts { len, data }
+    }
+
+    /// Whether an object's header word `info` is an array's whose elements
+    /// are words (`Layout::Words`: its tag).
+    fn is_word_array(b: &mut FunctionBuilder, info: Value) -> Value {
+        let mask = b.ins().iconst(I64, 0xffff_ffff_0000_00ffu64 as i64);
+        let kt = b.ins().band(info, mask);
+        let want = checkers_rt::array::K_ARRAY | (u64::from(checkers_rt::array::Layout::Words as u8) << 32);
+        b.ins().icmp_imm_s(IntCC::Equal, kt, want as i64)
+    }
+
+    /// Where the elements of bytes or an array `x` are: after its header, or
+    /// a slice points at them (#169).
+    fn elements(&self, b: &mut FunctionBuilder, x: Value) -> Value {
+        let ptr = b.ins().load(I64, flags(), x, (w::HDR + 8) as i32);
+        let inline = b.ins().iadd_imm_s(x, (w::HDR + 16) as i64);
+        let sliced = b.ins().icmp_imm_s(IntCC::NotEqual, ptr, 0);
+        b.ins().select(sliced, ptr, inline)
     }
 
     /// In code compiled for the compiler, counts a function entry or a loop
@@ -860,7 +1045,9 @@ impl<'p, M: Module> Gen<'p, M> {
     }
 
     fn dup(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value) {
-        if st.imm.contains(&x) || Self::small(b, st, x) {
+        // A constant word is never an object: objects are static data's
+        // addresses, or allocated.
+        if st.imm.contains(&x) || Self::const_word(b, x).is_some() || Self::small(b, st, x) {
             return;
         }
         let inc = b.create_block();
@@ -875,7 +1062,9 @@ impl<'p, M: Module> Gen<'p, M> {
     }
 
     fn drop_v(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value) {
-        if st.imm.contains(&x) || Self::small(b, st, x) {
+        // A constant word is never an object: objects are static data's
+        // addresses, or allocated.
+        if st.imm.contains(&x) || Self::const_word(b, x).is_some() || Self::small(b, st, x) {
             return;
         }
         let dec = b.create_block();
@@ -902,21 +1091,22 @@ impl<'p, M: Module> Gen<'p, M> {
 
     /// Finish with `x`: return it, or pass it on. Where several words are
     /// expected, `x` is a failure's (it never returns): the rest are 0.
-    fn finish(b: &mut FunctionBuilder, mode: &Mode, x: Value) {
+    fn finish(&mut self, b: &mut FunctionBuilder, st: &mut St, mode: &Mode, x: Value) {
         let n = match mode {
             Mode::Tail(n) => *n,
             Mode::Val(k) => b.func.dfg.num_block_params(*k),
+            Mode::Join(_) => 1,
         };
         let mut xs = vec![x];
         if n > 1 {
             let z = b.ins().iconst(I64, 0);
             xs.resize(n, z);
         }
-        Self::finish_all(b, mode, &xs)
+        self.finish_all(b, st, mode, &xs)
     }
 
     /// Finish with all of `xs`, the words expected.
-    fn finish_all(b: &mut FunctionBuilder, mode: &Mode, xs: &[Value]) {
+    fn finish_all(&mut self, b: &mut FunctionBuilder, st: &mut St, mode: &Mode, xs: &[Value]) {
         match mode {
             Mode::Tail(_) => {
                 b.ins().return_(xs);
@@ -925,6 +1115,224 @@ impl<'p, M: Module> Gen<'p, M> {
                 let args: Vec<BlockArg> = xs.iter().map(|x| BlockArg::Value(*x)).collect();
                 b.ins().jump(*k, &args);
             }
+            Mode::Join(j) => self.join_to(b, st, j, xs[0]),
+        }
+    }
+
+    // ── joins matched at once (`Join`) ──────────────────────────────────────
+
+    /// The `match` of `let x = a` in `body`, if `Join` applies: `body` is
+    /// (after dropping `x`) a `match` on `x` whose arms are constructors
+    /// without fields, and `a` branches.
+    fn join_of<'a>(x: V, a: &E, body: &'a E) -> Option<(bool, &'a [Arm], Option<&'a E>)> {
+        let (drop_x, m) = match body {
+            E::Drop(v, m) if *v == x => (true, &**m),
+            m => (false, m),
+        };
+        let E::Case { scrut, arms, lits, default } = m else { return None };
+        let mut core = a;
+        while let E::Let(_, _, e) | E::Dup(_, e) | E::Drop(_, e) | E::DropReuse(_, _, _, e) | E::At(_, e) = core {
+            core = e;
+        }
+        let ok = *scrut == x && lits.is_empty() && !arms.is_empty() && arms.iter().all(|a| a.fields.is_empty()) && matches!(core, E::Case { .. });
+        ok.then_some((drop_x, &arms[..], default.as_deref()))
+    }
+
+    /// The arm of `j` a constructor's word selects (`j.arms.len()`: the
+    /// default).
+    fn join_arm(&self, j: &Join, word: i64) -> usize {
+        j.arms.iter().position(|a| w::nullary(a.con) as i64 == word).unwrap_or(j.arms.len())
+    }
+
+    /// How many of `e`'s branches end in each arm of `arms` (and the
+    /// default, last): a constructor ends in its arm, a comparison in
+    /// `True`'s and `False`'s.
+    fn join_reach(&self, e: &E, arms: &[Arm], n: &mut [usize]) {
+        let arm = |word: i64| arms.iter().position(|a| w::nullary(a.con) as i64 == word).unwrap_or(arms.len());
+        match e {
+            E::Let(_, _, e) | E::Dup(_, e) | E::Drop(_, e) | E::DropReuse(_, _, _, e) | E::At(_, e) => self.join_reach(e, arms, n),
+            E::Case { arms: cs, lits, default, .. } => {
+                for c in cs {
+                    self.join_reach(&c.body, arms, n);
+                }
+                for (_, c) in lits {
+                    self.join_reach(c, arms, n);
+                }
+                if let Some(d) = default {
+                    self.join_reach(d, arms, n);
+                }
+            }
+            E::Con { con, fields, reuse: None } if fields.is_empty() => n[arm(w::nullary(*con) as i64)] += 1,
+            E::Borrow { op: BOp::Prim(Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge, _), .. } => {
+                n[arm(self.true_w)] += 1;
+                n[arm(self.false_w)] += 1;
+            }
+            _ => {}
+        }
+    }
+
+    /// `let x = a` then `j`'s `match` on `x`.
+    fn join(&mut self, b: &mut FunctionBuilder, st: &mut St, j: &Join, a: &E) {
+        let n = j.arms.len() + 1;
+        *j.state.borrow_mut() = JoinState { inline: vec![false; n], blocks: vec![None; n], other: None };
+        self.emit(b, st, a, Mode::Join(j));
+        // Any other value: matched.
+        let other = j.state.borrow().other;
+        if let Some(k) = other {
+            b.switch_to_block(k);
+            let r = b.block_params(k)[0];
+            for idx in 0..j.arms.len() {
+                let next = b.create_block();
+                let c = b.ins().icmp_imm_s(IntCC::Equal, r, w::nullary(j.arms[idx].con) as i64);
+                let to = self.join_block(b, j, idx);
+                b.ins().brif(c, to, &[BlockArg::Value(r)], next, &[]);
+                b.switch_to_block(next);
+            }
+            let to = self.join_block(b, j, j.arms.len());
+            b.ins().jump(to, &[BlockArg::Value(r)]);
+        }
+        // The arms reached from several places, each once.
+        for idx in 0..n {
+            let blk = j.state.borrow().blocks[idx];
+            if let Some(k) = blk {
+                b.switch_to_block(k);
+                st.quots.clone_from(&j.quots);
+                let r = b.block_params(k)[0];
+                self.join_arm_body(b, st, j, idx, r);
+            }
+        }
+        st.quots.clone_from(&j.quots);
+    }
+
+    /// The block of arm `idx` of `j`, taking `x`'s word.
+    fn join_block(&self, b: &mut FunctionBuilder, j: &Join, idx: usize) -> ir::Block {
+        let mut s = j.state.borrow_mut();
+        *s.blocks[idx].get_or_insert_with(|| {
+            let k = b.create_block();
+            b.append_block_param(k, I64);
+            k
+        })
+    }
+
+    /// Arm `idx` of `j`, `x` being `r`.
+    fn join_arm_body(&mut self, b: &mut FunctionBuilder, st: &mut St, j: &Join, idx: usize, r: Value) {
+        // An arm's constructor is its word: never dropped, known where the
+        // arm uses it.
+        let x = if idx < j.arms.len() {
+            let x = b.ins().iconst(I64, w::nullary(j.arms[idx].con) as i64);
+            st.imm.insert(x);
+            x
+        } else {
+            if j.drop_x {
+                self.drop_v(b, st, r);
+            }
+            r
+        };
+        st.vars[j.x as usize] = Some(x);
+        match j.arms.get(idx).map(|a| &a.body).or(j.default) {
+            Some(e) => self.emit(b, st, e, j.outer),
+            None => {
+                let o = self.owner(b, st);
+                let v = self.call1(b, st, "ck_nomatch", &[x, o]);
+                self.finish(b, st, &j.outer, v);
+            }
+        }
+    }
+
+    /// Go on to arm `idx` of `j` from here, `x` being `r`: the arm emitted
+    /// here if this is the one place it is reached from, else its block.
+    fn join_go(&mut self, b: &mut FunctionBuilder, st: &mut St, j: &Join, idx: usize, r: Value) {
+        let here = j.reach[idx] == 1 && !std::mem::replace(&mut j.state.borrow_mut().inline[idx], true);
+        if here {
+            self.join_arm_body(b, st, j, idx, r);
+        } else {
+            let k = self.join_block(b, j, idx);
+            b.ins().jump(k, &[BlockArg::Value(r)]);
+        }
+    }
+
+    /// `a`'s value `x`, for `j`'s `match`.
+    fn join_to(&mut self, b: &mut FunctionBuilder, st: &mut St, j: &Join, x: Value) {
+        if let Some(word) = Self::const_word(b, x) {
+            let idx = self.join_arm(j, word);
+            return self.join_go(b, st, j, idx, x);
+        }
+        if let Some(cond) = st.conds.get(&x).cloned() {
+            let blocks = [b.create_block(), b.create_block()];
+            b.ins().brif(cond.c, blocks[0], &[], blocks[1], &[]);
+            let quots = st.quots.clone();
+            for (k, blk) in blocks.into_iter().enumerate() {
+                b.switch_to_block(blk);
+                st.quots.clone_from(&quots);
+                let word = if k == 0 { self.true_w } else { self.false_w };
+                let r = b.ins().iconst(I64, word);
+                let facts = Self::assume_cond(b, st, &cond, k);
+                let idx = self.join_arm(j, word);
+                self.join_go(b, st, j, idx, r);
+                Self::forget_cond(st, facts);
+            }
+            return;
+        }
+        let k = *j.state.borrow_mut().other.get_or_insert_with(|| {
+            let k = b.create_block();
+            b.append_block_param(k, I64);
+            k
+        });
+        b.ins().jump(k, &[BlockArg::Value(x)]);
+    }
+
+    /// What holds where `cond` is true (`side` 0) or false (1): small
+    /// integers, and the bounds its comparison gives its operands. To
+    /// `forget_cond` once that code has been emitted.
+    fn assume_cond(b: &FunctionBuilder, st: &mut St, cond: &Cond, side: usize) -> (Vec<Value>, Vec<(Value, Option<Range>)>) {
+        let small = Self::assume_small(st, &cond.small_if[side]);
+        let mut saved = Vec::new();
+        if let Some((p, x, y)) = cond.rel {
+            // The comparison that holds on this side, as `x op y`.
+            let p = if side == 0 {
+                p
+            } else {
+                match p {
+                    Op::Eq => Op::Ne,
+                    Op::Ne => Op::Eq,
+                    Op::Lt => Op::Ge,
+                    Op::Ge => Op::Lt,
+                    Op::Le => Op::Gt,
+                    _ => Op::Le,
+                }
+            };
+            // `x > y` is `y < x`.
+            let (p, x, y) = match p {
+                Op::Gt => (Op::Lt, y, x),
+                Op::Ge => (Op::Le, y, x),
+                p => (p, x, y),
+            };
+            let (rx, ry) = (Self::range(b, st, x), Self::range(b, st, y));
+            let below = |r: Range, d: i128| Range { lo: None, hi: r.hi.and_then(|h| h.checked_sub(d)) };
+            let above = |r: Range, d: i128| Range { lo: r.lo.and_then(|l| l.checked_add(d)), hi: None };
+            let (nx, ny) = match p {
+                Op::Eq => (rx.meet(ry), ry.meet(rx)),
+                Op::Lt => (rx.meet(below(ry, 1)), ry.meet(above(rx, 1))),
+                Op::Le => (rx.meet(below(ry, 0)), ry.meet(above(rx, 0))),
+                _ => (rx, ry),
+            };
+            for (v, new, old) in [(x, nx, rx), (y, ny, ry)] {
+                if new != old && Self::const_word(b, v).is_none() {
+                    saved.push((v, st.bounds.get(&v).copied()));
+                    st.bounds.insert(v, new);
+                }
+            }
+        }
+        (small, saved)
+    }
+
+    fn forget_cond(st: &mut St, (small, saved): (Vec<Value>, Vec<(Value, Option<Range>)>)) {
+        Self::forget(st, small);
+        for (v, old) in saved.into_iter().rev() {
+            match old {
+                Some(r) => st.bounds.insert(v, r),
+                None => st.bounds.remove(&v),
+            };
         }
     }
 
@@ -1009,19 +1417,25 @@ impl<'p, M: Module> Gen<'p, M> {
         match e {
             E::Var(_) | E::Int(_) | E::Erased | E::Unit | E::Str(_) | E::Bytes(_) | E::Static(..) => {
                 let x = self.val(b, st, e);
-                Self::finish(b, &mode, x)
+                self.finish(b, st, &mode, x)
             }
             E::Global(d) => {
                 let x = self.global(b, st, *d);
-                Self::finish(b, &mode, x)
+                self.finish(b, st, &mode, x)
             }
             E::ConFn(c) => {
                 let f = self.p.con_wraps[c];
                 let d = self.closure(f);
                 let x = self.addr(b, st, d);
-                Self::finish(b, &mode, x)
+                self.finish(b, st, &mode, x)
             }
             E::Let(x, a, body) => {
+                if let Some((drop_x, arms, default)) = Self::join_of(*x, a, body) {
+                    let mut reach = vec![0; arms.len() + 1];
+                    self.join_reach(a, arms, &mut reach);
+                    let j = Join { x: *x, drop_x, arms, default, outer: mode, reach, state: Default::default(), quots: st.quots.clone() };
+                    return self.join(b, st, &j, a);
+                }
                 self.bind(b, st, *x, a);
                 self.emit(b, st, body, mode)
             }
@@ -1040,10 +1454,10 @@ impl<'p, M: Module> Gen<'p, M> {
                     Mode::Tail(_) => {
                         b.ins().return_call(r, &vs);
                     }
-                    Mode::Val(k) => {
+                    Mode::Val(_) | Mode::Join(_) => {
                         let inst = b.ins().call(r, &vs);
                         let xs = b.inst_results(inst).to_vec();
-                        Self::finish_all(b, &Mode::Val(k), &xs);
+                        self.finish_all(b, st, &mode, &xs);
                     }
                 }
             }
@@ -1065,17 +1479,17 @@ impl<'p, M: Module> Gen<'p, M> {
                     let cv = self.var(b, st, *c);
                     b.ins().store(flags(), cv, x, (w::HDR + 8 + 8 * k) as i32);
                 }
-                Self::finish(b, &mode, x)
+                self.finish(b, st, &mode, x)
             }
             E::Con { con, fields, reuse } => {
                 let vs: Vec<Value> = fields.iter().map(|a| self.val(b, st, a)).collect();
                 let tok = reuse.map(|t| self.var(b, st, t));
                 let x = self.build_con(b, st, *con, &vs, tok);
-                Self::finish(b, &mode, x)
+                self.finish(b, st, &mode, x)
             }
             E::Multi(xs) => {
                 let vs: Vec<Value> = xs.iter().map(|a| self.val(b, st, a)).collect();
-                Self::finish_all(b, &mode, &vs)
+                self.finish_all(b, st, &mode, &vs)
             }
             E::LetMulti(xs, a, body) => {
                 let k = b.create_block();
@@ -1094,16 +1508,16 @@ impl<'p, M: Module> Gen<'p, M> {
                     b.ins().store(flags(), *v, x, (w::HDR + 8 * k) as i32);
                 }
                 let x = self.flatten_tuple(b, st, x, vs[vs.len() - 1]);
-                Self::finish(b, &mode, x)
+                self.finish(b, st, &mode, x)
             }
             E::Borrow { op, args, drops } => {
                 let x = self.borrow_e(b, st, *op, args, drops);
-                Self::finish(b, &mode, x)
+                self.finish(b, st, &mode, x)
             }
             E::Par(xs) => {
                 let vs: Vec<Value> = xs.iter().map(|a| self.val(b, st, a)).collect();
                 let x = self.call_array(b, st, "ck_par", &vs);
-                Self::finish(b, &mode, x)
+                self.finish(b, st, &mode, x)
             }
             E::At(o, x) => {
                 let saved = std::mem::replace(&mut st.owner, *o);
@@ -1114,7 +1528,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 let o = self.owner(b, st);
                 let (p, n) = self.message(b, st, m);
                 let x = self.call1(b, st, "ck_fail", &[o, p, n]);
-                Self::finish(b, &mode, x)
+                self.finish(b, st, &mode, x)
             }
             E::Dup(v, body) => {
                 let x = self.var(b, st, *v);
@@ -1323,17 +1737,17 @@ impl<'p, M: Module> Gen<'p, M> {
                 debug_assert_eq!(n, 1, "a closure returns one word");
                 b.ins().return_call_indirect(sig, code, &vs);
             }
-            Mode::Val(k) => {
+            Mode::Val(_) | Mode::Join(_) => {
                 let inst = b.ins().call_indirect(sig, code, &vs);
                 let x = b.inst_results(inst)[0];
-                b.ins().jump(k, &[BlockArg::Value(x)]);
+                self.finish(b, st, &mode, x);
             }
         }
         b.switch_to_block(slow);
         let p = self.array(b, args);
         let nn = b.ins().iconst(I64, n as i64);
         let x = self.call1(b, st, "ck_apply", &[f, p, nn]);
-        Self::finish(b, &mode, x);
+        self.finish(b, st, &mode, x);
     }
 
     fn bool_of(&self, b: &mut FunctionBuilder, c: Value) -> Value {
@@ -1344,9 +1758,9 @@ impl<'p, M: Module> Gen<'p, M> {
 
     /// A comparison's `Bool` from its condition, which a `match` on it
     /// branches on instead (`St::conds`).
-    fn bool_cond(&self, b: &mut FunctionBuilder, st: &mut St, c: Value, small_if: [Vec<Value>; 2]) -> Value {
+    fn bool_cond(&self, b: &mut FunctionBuilder, st: &mut St, c: Value, small_if: [Vec<Value>; 2], rel: (Op, Value, Value)) -> Value {
         let w = self.bool_of(b, c);
-        st.conds.insert(w, Cond { c, small_if });
+        st.conds.insert(w, Cond { c, small_if, rel: Some(rel) });
         w
     }
 
@@ -1361,10 +1775,15 @@ impl<'p, M: Module> Gen<'p, M> {
     }
 
     /// Is `e`'s value never a pointer? A comparison gives `True` or `False`,
-    /// constructors without fields.
+    /// constructors without fields; so does a `match` whose arms each give
+    /// one (`a and b`).
     fn immediate(e: &E) -> bool {
         match e {
             E::Let(_, _, x) | E::At(_, x) | E::Dup(_, x) | E::Drop(_, x) | E::DropReuse(_, _, _, x) => Self::immediate(x),
+            E::Con { fields, reuse: None, .. } => fields.is_empty(),
+            E::Case { arms, lits, default, .. } => {
+                arms.iter().all(|a| Self::immediate(&a.body)) && lits.iter().all(|(_, e)| Self::immediate(e)) && default.as_deref().is_none_or(Self::immediate)
+            }
             _ => matches!(e, E::Borrow { op: BOp::Prim(Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge, _), .. }),
         }
     }
@@ -1410,6 +1829,8 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             // An `Array U8`'s element: a byte.
             Op::Index if nat => return Some(Range { lo: Some(0), hi: Some(255) }),
+            // A length is a small integer, and not negative.
+            Op::Len => return Some(Range { lo: Some(0), hi: SMALL.hi }),
             _ => return None,
         };
         Some(crate::range::combine(prim, r(0), r(1), nat && p == Op::Sub))
@@ -1623,8 +2044,7 @@ impl<'p, M: Module> Gen<'p, M> {
             panic!("native code for `{}`: {e:?}", w.name());
         }
         if let Some(d) = &mut self.disasm {
-            let code = ctx.compiled_code().and_then(|c| c.vcode.clone()).unwrap_or_default();
-            d.push((w.name().to_string(), code));
+            d.push((w.name().to_string(), named_code(&self.m, ctx)));
         }
         self.m.clear_context(ctx);
     }
@@ -1890,7 +2310,7 @@ impl<'p, M: Module> Gen<'p, M> {
             // Where `x == 3` holds, `x` is a small integer too.
             let other: Vec<Value> = [x, y].into_iter().filter(|v| !Self::small(b, st, *v)).collect();
             let small_if = if p == Op::Eq { [other, Vec::new()] } else { [Vec::new(), other] };
-            return self.bool_cond(b, st, c, if eq { small_if } else { [Vec::new(), Vec::new()] });
+            return self.bool_cond(b, st, c, if eq { small_if } else { [Vec::new(), Vec::new()] }, (p, x, y));
         }
         let fast = b.create_block();
         let slow = b.create_block();
@@ -1915,7 +2335,7 @@ impl<'p, M: Module> Gen<'p, M> {
         }
         b.ins().jump(done, &[BlockArg::Value(c2)]);
         b.switch_to_block(done);
-        self.bool_cond(b, st, r, [Vec::new(), Vec::new()])
+        self.bool_cond(b, st, r, [Vec::new(), Vec::new()], (p, x, y))
     }
 
     /// A tuple just built whose last component is a tuple object is
@@ -2124,22 +2544,32 @@ impl<'p, M: Module> Gen<'p, M> {
                 let kinds = b.create_block();
                 let fast = b.create_block();
                 let slow = b.create_block();
+                b.set_cold_block(slow);
                 let done = b.create_block();
                 let r = b.append_block_param(done, I64);
-                let is_ptr = Self::is_ptr(b, a[0]);
-                b.ins().brif(is_ptr, kinds, &[], slow, &[]);
-                b.switch_to_block(kinds);
-                let info = b.ins().load(I64, flags(), a[0], 8);
-                let kind = b.ins().band_imm_s(info, 0xff);
-                let y = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_BYTES as i64);
-                let z = b.ins().icmp_imm_s(IntCC::Equal, kind, checkers_rt::array::K_ARRAY as i64);
-                let any = b.ins().bor(y, z);
-                b.ins().brif(any, fast, &[], slow, &[]);
-                b.switch_to_block(fast);
-                let n = b.ins().load(I64, flags(), a[0], w::HDR as i32);
-                let sh = b.ins().ishl_imm_s(n, 1);
-                let v = b.ins().bor_imm_s(sh, 1);
-                b.ins().jump(done, &[BlockArg::Value(v)]);
+                if let Some(facts) = st.arrays.get(&a[0]).copied() {
+                    // Read before the loop.
+                    b.ins().brif(facts.len, fast, &[], slow, &[]);
+                    b.switch_to_block(kinds);
+                    b.ins().jump(slow, &[]);
+                    b.switch_to_block(fast);
+                    b.ins().jump(done, &[BlockArg::Value(facts.len)]);
+                } else {
+                    let is_ptr = Self::is_ptr(b, a[0]);
+                    b.ins().brif(is_ptr, kinds, &[], slow, &[]);
+                    b.switch_to_block(kinds);
+                    let info = b.ins().load(I64, flags(), a[0], 8);
+                    let kind = b.ins().band_imm_s(info, 0xff);
+                    let y = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_BYTES as i64);
+                    let z = b.ins().icmp_imm_s(IntCC::Equal, kind, checkers_rt::array::K_ARRAY as i64);
+                    let any = b.ins().bor(y, z);
+                    b.ins().brif(any, fast, &[], slow, &[]);
+                    b.switch_to_block(fast);
+                    let n = b.ins().load(I64, flags(), a[0], w::HDR as i32);
+                    let sh = b.ins().ishl_imm_s(n, 1);
+                    let v = b.ins().bor_imm_s(sh, 1);
+                    b.ins().jump(done, &[BlockArg::Value(v)]);
+                }
                 b.switch_to_block(slow);
                 let c = self.call1(b, st, "ck_len", &[a[0]]);
                 b.ins().jump(done, &[BlockArg::Value(c)]);
@@ -2149,47 +2579,78 @@ impl<'p, M: Module> Gen<'p, M> {
                 r
             }
             Op::Index => {
-                // Inline: a small index into bytes, in bounds. Other arrays
-                // (#624) and everything else go to the runtime. An `Array
-                // U8` (`nat` here) is always bytes: no need to check.
-                let fast = b.create_block();
+                // Inline: a small index into bytes, or into an array of
+                // words (#624), in bounds. Packed arrays and everything
+                // else go to the runtime. An `Array U8` (`nat` here) is
+                // always bytes: no need to check.
                 let slow = b.create_block();
+                b.set_cold_block(slow);
                 let done = b.create_block();
                 let r = b.append_block_param(done, I64);
-                let is_int = b.ins().band_imm_s(a[1], 1);
-                let kind_check = b.create_block();
-                let check = b.create_block();
-                b.ins().brif(is_int, kind_check, &[], slow, &[]);
-                b.switch_to_block(kind_check);
-                if nat {
-                    b.ins().jump(check, &[]);
+                let kinds = b.create_block();
+                let bytes = b.create_block();
+                let words = b.create_block();
+                Self::if_small(b, st, &[a[1]], kinds, slow);
+                b.switch_to_block(kinds);
+                let i = b.ins().sshr_imm_s(a[1], 1);
+                let facts = st.arrays.get(&a[0]).copied();
+                let (bytes_at, words_at) = if nat {
+                    b.ins().jump(bytes, &[]);
+                    (facts.map(|f| f.data), None)
+                } else if let Some(f) = facts {
+                    let some = b.create_block();
+                    b.ins().brif(f.data, some, &[], slow, &[]);
+                    b.switch_to_block(some);
+                    let is_words = b.ins().icmp_imm_s(IntCC::SignedLessThan, f.data, 0);
+                    b.ins().brif(is_words, words, &[], bytes, &[]);
+                    (Some(f.data), Some(f.data))
                 } else {
                     let info = b.ins().load(I64, flags(), a[0], 8);
                     let kind = b.ins().band_imm_s(info, 0xff);
                     let is_bytes = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_BYTES as i64);
-                    b.ins().brif(is_bytes, check, &[], slow, &[]);
+                    let other = b.create_block();
+                    b.ins().brif(is_bytes, bytes, &[], other, &[]);
+                    b.switch_to_block(other);
+                    let is_words = Self::is_word_array(b, info);
+                    b.ins().brif(is_words, words, &[], slow, &[]);
+                    (None, None)
+                };
+                for (blk, at, width) in [(bytes, bytes_at, 0), (words, words_at, 3)] {
+                    b.switch_to_block(blk);
+                    let fast = b.create_block();
+                    if self.g.proved {
+                        // The index is in bounds: proved (§13.3).
+                        b.ins().jump(fast, &[]);
+                    } else if let Some(f) = facts {
+                        // Words `2i + 1` and `2n + 1` compare as `i` and `n` do.
+                        let inb = b.ins().icmp(IntCC::UnsignedLessThan, a[1], f.len);
+                        b.ins().brif(inb, fast, &[], slow, &[]);
+                    } else {
+                        let len = b.ins().load(I64, flags(), a[0], w::HDR as i32);
+                        let inb = b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+                        b.ins().brif(inb, fast, &[], slow, &[]);
+                    }
+                    b.switch_to_block(fast);
+                    let data = match at {
+                        Some(d) => d,
+                        None => self.elements(b, a[0]),
+                    };
+                    let v = if width == 0 {
+                        let base = b.ins().iadd(data, i);
+                        let byte = b.ins().uload8(I64, flags(), base, 0);
+                        let sh = b.ins().ishl_imm_s(byte, 1);
+                        b.ins().bor_imm_s(sh, 1)
+                    } else {
+                        // Without `WORDS_BIT`, if the address is `ArrayFacts`'.
+                        let data = if facts.is_some() { b.ins().band_imm_s(data, !WORDS_BIT) } else { data };
+                        let off = b.ins().ishl_imm_s(i, width);
+                        let base = b.ins().iadd(data, off);
+                        let x = b.ins().load(I64, flags(), base, 0);
+                        self.dup(b, st, x);
+                        x
+                    };
+                    b.ins().jump(done, &[BlockArg::Value(v)]);
                 }
-                b.switch_to_block(check);
-                let i = b.ins().sshr_imm_s(a[1], 1);
-                if self.g.proved {
-                    // The index is in bounds: proved (§13.3).
-                    b.ins().jump(fast, &[]);
-                } else {
-                    let len = b.ins().load(I64, flags(), a[0], w::HDR as i32);
-                    let inb = b.ins().icmp(IntCC::UnsignedLessThan, i, len);
-                    b.ins().brif(inb, fast, &[], slow, &[]);
-                }
-                b.switch_to_block(fast);
-                // The bytes follow the header, or a slice points at them (#169).
-                let ptr = b.ins().load(I64, flags(), a[0], (w::HDR + 8) as i32);
-                let inline = b.ins().iadd_imm_s(a[0], (w::HDR + 16) as i64);
-                let sliced = b.ins().icmp_imm_s(IntCC::NotEqual, ptr, 0);
-                let data = b.ins().select(sliced, ptr, inline);
-                let base = b.ins().iadd(data, i);
-                let byte = b.ins().uload8(I64, flags(), base, 0);
-                let sh = b.ins().ishl_imm_s(byte, 1);
-                let v = b.ins().bor_imm_s(sh, 1);
-                b.ins().jump(done, &[BlockArg::Value(v)]);
                 b.switch_to_block(slow);
                 let s = self.call1(b, st, "ck_index", &[a[0], a[1], o]);
                 b.ins().jump(done, &[BlockArg::Value(s)]);
@@ -2315,7 +2776,7 @@ impl<'p, M: Module> Gen<'p, M> {
             None => {
                 let o = self.owner(b, st);
                 let v = self.call1(b, st, "ck_nomatch", &[x, o]);
-                Self::finish(b, &mode, v);
+                self.finish(b, st, &mode, v);
             }
         }
         st.quots = before;
@@ -2353,17 +2814,17 @@ impl<'p, M: Module> Gen<'p, M> {
         for k in 0..2 {
             b.switch_to_block(blocks[k]);
             st.quots.clone_from(&before);
-            let added = Self::assume_small(st, &cond.small_if[k]);
+            let added = Self::assume_cond(b, st, cond, k);
             match bodies[k].or(default) {
                 Some(e) => self.emit(b, st, e, mode.again()),
                 None => {
                     let o = self.owner(b, st);
                     let x = self.bool_of(b, cond.c);
                     let v = self.call1(b, st, "ck_nomatch", &[x, o]);
-                    Self::finish(b, mode, v);
+                    self.finish(b, st, mode, v);
                 }
             }
-            Self::forget(st, added);
+            Self::forget_cond(st, added);
         }
         st.quots = before;
         true
@@ -2477,12 +2938,9 @@ impl<'p, M: Module> Gen<'p, M> {
     }
 }
 
-impl Mode {
-    fn again(&self) -> Mode {
-        match self {
-            Mode::Tail(n) => Mode::Tail(*n),
-            Mode::Val(k) => Mode::Val(*k),
-        }
+impl Mode<'_> {
+    fn again(&self) -> Self {
+        *self
     }
 }
 
