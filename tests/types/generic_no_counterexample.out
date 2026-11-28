@@ -1,0 +1,10 @@
+error[E0450]: cannot prove `r`, the postcondition of `bytes_below`
+  --> generic_no_counterexample.ck:10:44
+   |
+10 | fn bytes_below xs -> r : xs~Bytes, r~Bool, r
+   |                                            ^ promised here
+   = note: for the value returned on line 11: `all_le xs 255 0`
+   = note: no counterexample: the one Z3 found holds array elements that are not values of their type, and it found none that are
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+generic_no_counterexample.ck: 1 error, 0 warnings

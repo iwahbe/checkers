@@ -1,0 +1,21 @@
+error[E0450]: cannot prove `r`, the postcondition of `at_bytes`
+  --> generic_counterexample.ck:10:53
+   |
+10 | fn at_bytes xs -> r : xs~Bytes, 1 < len xs, r~Bool, r
+   |                                                     ^ promised here
+   = note: for the value returned on line 11: `ordered_from xs 0`
+   = note: facts in scope: `1 < (len xs)`
+   = note: counterexample: xs = b"\r\x0c"
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `r`, the postcondition of `at_digits`
+  --> generic_counterexample.ck:13:78
+   |
+13 | fn at_digits xs -> r : xs~Array (n~Int, 0 <= n, n <= 9), 1 < len xs, r~Bool, r
+   |                                                                              ^ promised here
+   = note: for the value returned on line 14: `ordered_from xs 0`
+   = note: facts in scope: `1 < (len xs)`
+   = note: counterexample: xs = array.from_list [4, 3]
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+generic_counterexample.ck: 2 errors, 0 warnings
