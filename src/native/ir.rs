@@ -226,6 +226,28 @@ impl<'g> Compiler<'g> {
                 // Code of another definition applied (a lambda's body put
                 // into a copy, `spec`): the arguments, then that code.
                 if let Some((o, inner)) = super::spec::marked(h) {
+                    // A definition's function (one no runtime error names,
+                    // passed from code of `o`): its arguments that run
+                    // bound in order, then the call compiled as code of
+                    // `o`, so it is `o`'s copy (`spec::report`) and its
+                    // erased arguments are what the call needs (#170).
+                    if let Tm::Def(_) = inner {
+                        let r = spine.iter().filter(|(_, m)| *m != Mult::Zero).count();
+                        let mut j = 0;
+                        let call = spine.iter().fold(inner.clone(), |c, (a, m)| {
+                            let a = if *m == Mult::Zero {
+                                crate::core::rename_free(a, 0, &|v| v + r)
+                            } else {
+                                j += 1;
+                                Tm::Var(r - j)
+                            };
+                            Tm::App(Rc::new(c), Rc::new(a), Icit::Expl, *m)
+                        });
+                        let body = Ir::At(o, self.at(o).under(r).compile(&call));
+                        // Argument `j` is computed under the `let`s of those before it.
+                        let run: Vec<Ir> = spine.iter().filter(|(_, m)| *m != Mult::Zero).enumerate().map(|(j, (a, _))| shift(&self.go(a), j, 0)).collect();
+                        return run.into_iter().rev().fold(body, |b, v| Ir::Let(Arc::new(v), Arc::new(b)));
+                    }
                     let n = spine.len();
                     let inner = self.at(o).go(&crate::core::rename_free(inner, 0, &|v| v - 1));
                     let call = Ir::Call(Arc::new(shift(&inner, n, 0)), (0..n).rev().map(|i| Arc::new(Ir::Var(i))).collect());
