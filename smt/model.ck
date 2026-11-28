@@ -3668,14 +3668,6 @@ export lemma has_value_def c m t : c~Context, m~Model, t~Term
 
 # ── Every definition's equation is an axiom of the context ───────────────────
 
-# A list fact `std.list` doesn't state (#679).
-lemma drop_length_append l y z : l~List a, y~a, z~List a
-    ensures list.head (list.drop (list.length l) (l ++ (y :: z))) == Some y
-    proof
-        match l
-            []        -> auto
-            _ :: rest -> have drop_length_append rest y z
-
 # The parameters of a binder list, `Var (k - 1)` … `Var 0`, have its sorts,
 # in order.
 lemma params_sorted sig ss e : sig~Sig, ss~List Sort, e~List Sort
@@ -3687,7 +3679,7 @@ lemma params_sorted sig ss e : sig~Sig, ss~List Sort, e~List Sort
                 let env = list.reverse rest ++ (x :: e)
                 have list.reverse_cons_append rest x e
                 have list.length_reverse rest
-                have drop_length_append (list.reverse rest) x e
+                have list.drop_append (list.reverse rest) (x :: e)
                 have term.sort_of_var sig env (list.length rest)
                 have params_sorted sig rest (x :: e)
                 have term.sorts_of_cons sig env (Var (list.length rest)) (params_from (list.length rest))

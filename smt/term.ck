@@ -2343,18 +2343,11 @@ lemma bound_heads sig env bs ss : sig~Sig, env~List Sort, bs~List (Name, Term), 
                         have bound_heads sig env rest more
                     _               -> auto
 
-# A variable's sort is found only for an index below the environment's length
-# (a list fact `std.list` doesn't state, #679).
-lemma drop_head i xs : i~Nat, xs~List a, list.head (list.drop i xs) != None
-    ensures i < list.length xs
-    proof
-        auto
-
 lemma sort_of_scoped sig env t s : sig~Sig, env~List Sort, t~Term, s~Sort, sort_of sig env t == Ok s
     ensures scoped (list.length env) t
     proof
         match t
-            Var i          -> have drop_head i env
+            Var i          -> have list.head_drop i env
             App _ args     ->
                 match sorts_of sig env args
                     Ok found -> have sorts_of_scoped sig env args found
