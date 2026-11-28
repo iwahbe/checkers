@@ -127,7 +127,8 @@
 # the lemmas below about what each connective means (`two_valued`,
 # `and_meaning` and the rest); monotonicity (`monotone`), and `not fails`
 # for partial models from it (`cert.not_refuted`). The `Invalid` theorem
-# is still owed.
+# is still owed; for it, so far, a definite answer of unfolding is the
+# answer at more fuel (`unfolding_more_fuel`).
 #
 # `before` is a strict total order on values (`before_irreflexive`,
 # `before_transitive`, `before_total`). S6 also owes these, which this
@@ -2672,7 +2673,8 @@ export lemma arrays_total_at_fuel c m n s a b i j x env senv xs body : c~Context
 
 # ── Monotonicity ─────────────────────────────────────────────────────────────
 # A definite answer in a model is the answer in every model that agrees
-# with it wherever it answers (#86): `monotone`.
+# with it wherever it answers (#86): `monotone`. A definite answer of
+# unfolding is the answer at more fuel: `unfolding_more_fuel`.
 
 # What a model is asked by `eval`: each of `Model`'s `funs`, `select`,
 # `const`, `store`, `sum`, `lambda`, `div_zero`, `mod_zero`, `nth_out` and
@@ -2834,25 +2836,27 @@ lemma given_mono c m n s h x y : c~Context, m~Model, n~Model, s~Sort, h~Head, x~
             Some v -> if of_sort c m s v then have of_sort_mono c m n s v else auto
             None   -> auto
 
-lemma value_mono lm ln c m n e1 e2 senv t : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
-                                            e2~List (Result Value Unknown), senv~List Sort, t~Term, envs_refine e1 e2,
-                                            said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
-                                            arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
-                                            domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
-                                                      of_sort c n (Unin u args) (Element k))
-    ensures refines (value lm AsGiven c m e1 senv t) (value ln AsGiven c n e2 senv t)
+lemma value_mono lm ln mode c m n e1 e2 senv t : lm~Lower, ln~Lower, mode~Mode, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                                 e2~List (Result Value Unknown), senv~List Sort, t~Term, envs_refine e1 e2,
+                                                 lows: (forall f1 f2 s2 u : f1~List (Result Value Unknown), f2~List (Result Value Unknown), s2~List Sort, u~Term, envs_refine f1 f2,
+                                                        mode == Unfolding implies refines (lm.value f1 s2 u) (ln.value f2 s2 u)),
+                                                 said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                                 arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                                 domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                           of_sort c n (Unin u args) (Element k))
+    ensures refines (value lm mode c m e1 senv t) (value ln mode c n e2 senv t)
     proof
         match t
             Var i          -> have at_mono e1 e2 i
-            App h args     -> have apply_mono lm ln c m n e1 e2 senv t h args
+            App h args     -> have apply_mono lm ln mode c m n e1 e2 senv t h args
             Let binds body ->
-                have bound_mono lm ln c m n e1 e2 senv binds
-                have reverse_mono (bound lm AsGiven c m e1 senv binds) (bound ln AsGiven c n e2 senv binds) e1 e2
+                have bound_mono lm ln mode c m n e1 e2 senv binds
+                have reverse_mono (bound lm mode c m e1 senv binds) (bound ln mode c n e2 senv binds) e1 e2
                 match term.sorts_of (term.signature c) senv (term.bind_terms binds)
                     Ok ss ->
-                        let f1 = list.reverse (bound lm AsGiven c m e1 senv binds) ++ e1
-                        let f2 = list.reverse (bound ln AsGiven c n e2 senv binds) ++ e2
-                        have value_mono lm ln c m n f1 f2 (list.reverse ss ++ senv) body
+                        let f1 = list.reverse (bound lm mode c m e1 senv binds) ++ e1
+                        let f2 = list.reverse (bound ln mode c n e2 senv binds) ++ e2
+                        have value_mono lm ln mode c m n f1 f2 (list.reverse ss ++ senv) body
                     Err _ -> auto
             Lam _ x body   ->
                 have known_mono e1 e2
@@ -2865,75 +2869,85 @@ lemma value_mono lm ln c m n e1 e2 senv t : lm~Lower, ln~Lower, c~Context, m~Mod
                             None   -> auto
                     _             -> auto
 
-lemma values_mono lm ln c m n e1 e2 senv ts : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
-                                              e2~List (Result Value Unknown), senv~List Sort, ts~List Term, envs_refine e1 e2,
-                                              said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
-                                              arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
-                                              domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
-                                                        of_sort c n (Unin u args) (Element k))
-    ensures envs_refine (values lm AsGiven c m e1 senv ts) (values ln AsGiven c n e2 senv ts)
-    proof
-        match ts
-            []        -> auto
-            t :: rest ->
-                have value_mono lm ln c m n e1 e2 senv t
-                have values_mono lm ln c m n e1 e2 senv rest
-
-lemma bound_mono lm ln c m n e1 e2 senv bs : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
-                                             e2~List (Result Value Unknown), senv~List Sort, bs~List (term.Name, Term), envs_refine e1 e2,
-                                             said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
-                                             arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
-                                             domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
-                                                       of_sort c n (Unin u args) (Element k))
-    ensures envs_refine (bound lm AsGiven c m e1 senv bs) (bound ln AsGiven c n e2 senv bs)
-    proof
-        match bs
-            []             -> auto
-            (_, t) :: rest ->
-                have value_mono lm ln c m n e1 e2 senv t
-                have bound_mono lm ln c m n e1 e2 senv rest
-
-lemma conj_mono lm ln c m n e1 e2 senv ts : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
-                                            e2~List (Result Value Unknown), senv~List Sort, ts~List Term, envs_refine e1 e2,
-                                            said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
-                                            arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
-                                            domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
-                                                      of_sort c n (Unin u args) (Element k))
-    ensures bools_refine (conj lm AsGiven c m e1 senv ts) (conj ln AsGiven c n e2 senv ts)
-    proof
-        match ts
-            []        -> auto
-            t :: rest ->
-                have value_mono lm ln c m n e1 e2 senv t
-                have conj_mono lm ln c m n e1 e2 senv rest
-
-lemma disj_mono lm ln c m n e1 e2 senv ts : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
-                                            e2~List (Result Value Unknown), senv~List Sort, ts~List Term, envs_refine e1 e2,
-                                            said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
-                                            arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
-                                            domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
-                                                      of_sort c n (Unin u args) (Element k))
-    ensures bools_refine (disj lm AsGiven c m e1 senv ts) (disj ln AsGiven c n e2 senv ts)
-    proof
-        match ts
-            []        -> auto
-            t :: rest ->
-                have value_mono lm ln c m n e1 e2 senv t
-                have disj_mono lm ln c m n e1 e2 senv rest
-
-lemma apply_mono lm ln c m n e1 e2 senv t h args : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
-                                                   e2~List (Result Value Unknown), senv~List Sort, t~Term, h~Head, args~List Term, envs_refine e1 e2,
+lemma values_mono lm ln mode c m n e1 e2 senv ts : lm~Lower, ln~Lower, mode~Mode, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                                   e2~List (Result Value Unknown), senv~List Sort, ts~List Term, envs_refine e1 e2,
+                                                   lows: (forall f1 f2 s2 u : f1~List (Result Value Unknown), f2~List (Result Value Unknown), s2~List Sort, u~Term, envs_refine f1 f2,
+                                                          mode == Unfolding implies refines (lm.value f1 s2 u) (ln.value f2 s2 u)),
                                                    said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
                                                    arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
                                                    domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
                                                              of_sort c n (Unin u args) (Element k))
-    ensures refines (apply lm AsGiven c m e1 senv t h args) (apply ln AsGiven c n e2 senv t h args)
+    ensures envs_refine (values lm mode c m e1 senv ts) (values ln mode c n e2 senv ts)
     proof
-        have values_mono lm ln c m n e1 e2 senv args
+        match ts
+            []        -> auto
+            t :: rest ->
+                have value_mono lm ln mode c m n e1 e2 senv t
+                have values_mono lm ln mode c m n e1 e2 senv rest
+
+lemma bound_mono lm ln mode c m n e1 e2 senv bs : lm~Lower, ln~Lower, mode~Mode, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                                  e2~List (Result Value Unknown), senv~List Sort, bs~List (term.Name, Term), envs_refine e1 e2,
+                                                  lows: (forall f1 f2 s2 u : f1~List (Result Value Unknown), f2~List (Result Value Unknown), s2~List Sort, u~Term, envs_refine f1 f2,
+                                                         mode == Unfolding implies refines (lm.value f1 s2 u) (ln.value f2 s2 u)),
+                                                  said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                                  arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                                  domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                            of_sort c n (Unin u args) (Element k))
+    ensures envs_refine (bound lm mode c m e1 senv bs) (bound ln mode c n e2 senv bs)
+    proof
+        match bs
+            []             -> auto
+            (_, t) :: rest ->
+                have value_mono lm ln mode c m n e1 e2 senv t
+                have bound_mono lm ln mode c m n e1 e2 senv rest
+
+lemma conj_mono lm ln mode c m n e1 e2 senv ts : lm~Lower, ln~Lower, mode~Mode, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                                 e2~List (Result Value Unknown), senv~List Sort, ts~List Term, envs_refine e1 e2,
+                                                 lows: (forall f1 f2 s2 u : f1~List (Result Value Unknown), f2~List (Result Value Unknown), s2~List Sort, u~Term, envs_refine f1 f2,
+                                                        mode == Unfolding implies refines (lm.value f1 s2 u) (ln.value f2 s2 u)),
+                                                 said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                                 arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                                 domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                           of_sort c n (Unin u args) (Element k))
+    ensures bools_refine (conj lm mode c m e1 senv ts) (conj ln mode c n e2 senv ts)
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                have value_mono lm ln mode c m n e1 e2 senv t
+                have conj_mono lm ln mode c m n e1 e2 senv rest
+
+lemma disj_mono lm ln mode c m n e1 e2 senv ts : lm~Lower, ln~Lower, mode~Mode, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                                 e2~List (Result Value Unknown), senv~List Sort, ts~List Term, envs_refine e1 e2,
+                                                 lows: (forall f1 f2 s2 u : f1~List (Result Value Unknown), f2~List (Result Value Unknown), s2~List Sort, u~Term, envs_refine f1 f2,
+                                                        mode == Unfolding implies refines (lm.value f1 s2 u) (ln.value f2 s2 u)),
+                                                 said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                                 arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                                 domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                           of_sort c n (Unin u args) (Element k))
+    ensures bools_refine (disj lm mode c m e1 senv ts) (disj ln mode c n e2 senv ts)
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                have value_mono lm ln mode c m n e1 e2 senv t
+                have disj_mono lm ln mode c m n e1 e2 senv rest
+
+lemma apply_mono lm ln mode c m n e1 e2 senv t h args : lm~Lower, ln~Lower, mode~Mode, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                                        e2~List (Result Value Unknown), senv~List Sort, t~Term, h~Head, args~List Term, envs_refine e1 e2,
+                                                        lows: (forall f1 f2 s2 u : f1~List (Result Value Unknown), f2~List (Result Value Unknown), s2~List Sort, u~Term, envs_refine f1 f2,
+                                                               mode == Unfolding implies refines (lm.value f1 s2 u) (ln.value f2 s2 u)),
+                                                        said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                                        arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                                        domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                                  of_sort c n (Unin u args) (Element k))
+    ensures refines (apply lm mode c m e1 senv t h args) (apply ln mode c n e2 senv t h args)
+    proof
+        have values_mono lm ln mode c m n e1 e2 senv args
         match h
-            Prim op    -> have prim_mono lm ln c m n e1 e2 senv t op args
+            Prim op    -> have prim_mono lm ln mode c m n e1 e2 senv t op args
             ConstArr s ->
-                match values lm AsGiven c m e1 senv args
+                match values lm mode c m e1 senv args
                     [Ok x] ->
                         match m.const s x
                             Some k ->
@@ -2941,9 +2955,9 @@ lemma apply_mono lm ln c m n e1 e2 senv t h args : lm~Lower, ln~Lower, c~Context
                                 if m.array_in s k then have arrays s k else auto
                             None   -> auto
                     _      -> auto
-            Con _ _ _  -> have known_mono (values lm AsGiven c m e1 senv args) (values ln AsGiven c n e2 senv args)
+            Con _ _ _  -> have known_mono (values lm mode c m e1 senv args) (values ln mode c n e2 senv args)
             Sel d k j  ->
-                match (args, values lm AsGiven c m e1 senv args)
+                match (args, values lm mode c m e1 senv args)
                     ([a], [Ok (Constructed l fs)]) ->
                         if k == l
                             auto
@@ -2956,14 +2970,22 @@ lemma apply_mono lm ln c m n e1 e2 senv t h args : lm~Lower, ln~Lower, c~Context
                                 _                               -> auto
                     _                              -> auto
             Fun f      ->
-                let r1 = values lm AsGiven c m e1 senv args
-                let r2 = values ln AsGiven c n e2 senv args
+                let r1 = values lm mode c m e1 senv args
+                let r2 = values ln mode c n e2 senv args
                 have known_mono r1 r2
-                match (definition (term.defs c) f, all_known r1, sort_here c senv t)
-                    (_, Ok vs, Ok s) ->
+                match (mode, definition (term.defs c) f, all_known r1, sort_here c senv t)
+                    (Unfolding, Some d, _, _) ->
+                        if unfolds d
+                            have reverse_mono r1 r2 [] []
+                            have list.append_nil (list.reverse r1)
+                            have list.append_nil (list.reverse r2)
+                            have lows (list.reverse r1) (list.reverse r2) (term.binder_env d.params) d.body
+                        else
+                            auto
+                    (_, _, Ok vs, Ok s)       ->
                         have said_refines c m n (FunsAt f vs)
                         have given_mono c m n s (Fun f) (m.funs f vs) (n.funs f vs)
-                    _                -> auto
+                    _                         -> auto
             _          -> auto
 
 lemma concat_mono r1 r2 : r1~List (Result Value Unknown), r2~List (Result Value Unknown), envs_refine r1 r2
@@ -2973,45 +2995,47 @@ lemma concat_mono r1 r2 : r1~List (Result Value Unknown), r2~List (Result Value 
             (_ :: xr, _ :: yr) -> have concat_mono xr yr
             _                  -> auto
 
-lemma prim_mono lm ln c m n e1 e2 senv t op args : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
-                                                   e2~List (Result Value Unknown), senv~List Sort, t~Term, op~Op, args~List Term, envs_refine e1 e2,
-                                                   said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
-                                                   arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
-                                                   domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
-                                                             of_sort c n (Unin u args) (Element k))
-    ensures refines (prim lm AsGiven c m e1 senv t op args) (prim ln AsGiven c n e2 senv t op args)
+lemma prim_mono lm ln mode c m n e1 e2 senv t op args : lm~Lower, ln~Lower, mode~Mode, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                                        e2~List (Result Value Unknown), senv~List Sort, t~Term, op~Op, args~List Term, envs_refine e1 e2,
+                                                        lows: (forall f1 f2 s2 u : f1~List (Result Value Unknown), f2~List (Result Value Unknown), s2~List Sort, u~Term, envs_refine f1 f2,
+                                                               mode == Unfolding implies refines (lm.value f1 s2 u) (ln.value f2 s2 u)),
+                                                        said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                                        arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                                        domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                                  of_sort c n (Unin u args) (Element k))
+    ensures refines (prim lm mode c m e1 senv t op args) (prim ln mode c n e2 senv t op args)
     proof
         match (op, args)
-            (And, _)           -> have conj_mono lm ln c m n e1 e2 senv args
-            (Or, _)            -> have disj_mono lm ln c m n e1 e2 senv args
+            (And, _)           -> have conj_mono lm ln mode c m n e1 e2 senv args
+            (Or, _)            -> have disj_mono lm ln mode c m n e1 e2 senv args
             (SeqConcat, _)     ->
-                have values_mono lm ln c m n e1 e2 senv args
-                have concat_mono (values lm AsGiven c m e1 senv args) (values ln AsGiven c n e2 senv args)
+                have values_mono lm ln mode c m n e1 e2 senv args
+                have concat_mono (values lm mode c m e1 senv args) (values ln mode c n e2 senv args)
             (Div, [a, b])      ->
-                have value_mono lm ln c m n e1 e2 senv a
-                have value_mono lm ln c m n e1 e2 senv b
-                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv b)
+                have value_mono lm ln mode c m n e1 e2 senv a
+                have value_mono lm ln mode c m n e1 e2 senv b
+                match (value lm mode c m e1 senv a, value lm mode c m e1 senv b)
                     (Ok (Integer x), Ok (Integer 0)) -> have said_refines c m n (DivAt x)
                     _                                -> auto
             (Mod, [a, b])      ->
-                have value_mono lm ln c m n e1 e2 senv a
-                have value_mono lm ln c m n e1 e2 senv b
-                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv b)
+                have value_mono lm ln mode c m n e1 e2 senv a
+                have value_mono lm ln mode c m n e1 e2 senv b
+                match (value lm mode c m e1 senv a, value lm mode c m e1 senv b)
                     (Ok (Integer x), Ok (Integer 0)) -> have said_refines c m n (ModAt x)
                     _                                -> auto
             (Select, [a, i])   ->
-                have value_mono lm ln c m n e1 e2 senv a
-                have value_mono lm ln c m n e1 e2 senv i
-                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv i, sort_here c senv a, sort_here c senv t)
+                have value_mono lm ln mode c m n e1 e2 senv a
+                have value_mono lm ln mode c m n e1 e2 senv i
+                match (value lm mode c m e1 senv a, value lm mode c m e1 senv i, sort_here c senv a, sort_here c senv t)
                     (Ok (ArrayElem k), Ok j, Ok s, Ok w) ->
                         have said_refines c m n (SelectAt s k j)
                         have given_mono c m n w (Prim Select) (m.select s k j) (n.select s k j)
                     _                                    -> auto
             (Store, [a, i, v]) ->
-                have value_mono lm ln c m n e1 e2 senv a
-                have value_mono lm ln c m n e1 e2 senv i
-                have value_mono lm ln c m n e1 e2 senv v
-                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv i, value lm AsGiven c m e1 senv v, sort_here c senv t)
+                have value_mono lm ln mode c m n e1 e2 senv a
+                have value_mono lm ln mode c m n e1 e2 senv i
+                have value_mono lm ln mode c m n e1 e2 senv v
+                match (value lm mode c m e1 senv a, value lm mode c m e1 senv i, value lm mode c m e1 senv v, sort_here c senv t)
                     (Ok (ArrayElem k), Ok j, Ok y, Ok s) ->
                         match m.store s k j y
                             Some l ->
@@ -3020,9 +3044,9 @@ lemma prim_mono lm ln c m n e1 e2 senv t op args : lm~Lower, ln~Lower, c~Context
                             None   -> auto
                     _                                    -> auto
             (MapAdd, [a, b])   ->
-                have value_mono lm ln c m n e1 e2 senv a
-                have value_mono lm ln c m n e1 e2 senv b
-                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv b, sort_here c senv t)
+                have value_mono lm ln mode c m n e1 e2 senv a
+                have value_mono lm ln mode c m n e1 e2 senv b
+                match (value lm mode c m e1 senv a, value lm mode c m e1 senv b, sort_here c senv t)
                     (Ok (ArrayElem p), Ok (ArrayElem q), Ok s) ->
                         match m.sum s p q
                             Some l ->
@@ -3031,21 +3055,21 @@ lemma prim_mono lm ln c m n e1 e2 senv t op args : lm~Lower, ln~Lower, c~Context
                             None   -> auto
                     _                                          -> auto
             (SeqNth, [a, i])   ->
-                have value_mono lm ln c m n e1 e2 senv a
-                have value_mono lm ln c m n e1 e2 senv i
-                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv i, sort_here c senv t)
+                have value_mono lm ln mode c m n e1 e2 senv a
+                have value_mono lm ln mode c m n e1 e2 senv i
+                match (value lm mode c m e1 senv a, value lm mode c m e1 senv i, sort_here c senv t)
                     (Ok (Sequence xs), Ok (Integer k), Ok s) ->
                         have said_refines c m n (NthAt s xs k)
                         have given_mono c m n s (Prim SeqNth) (m.nth_out s xs k) (n.nth_out s xs k)
                     _                                        -> auto
-            (_, [a])           -> have value_mono lm ln c m n e1 e2 senv a
+            (_, [a])           -> have value_mono lm ln mode c m n e1 e2 senv a
             (_, [a, b])        ->
-                have value_mono lm ln c m n e1 e2 senv a
-                have value_mono lm ln c m n e1 e2 senv b
+                have value_mono lm ln mode c m n e1 e2 senv a
+                have value_mono lm ln mode c m n e1 e2 senv b
             (_, [a, b, d])     ->
-                have value_mono lm ln c m n e1 e2 senv a
-                have value_mono lm ln c m n e1 e2 senv b
-                have value_mono lm ln c m n e1 e2 senv d
+                have value_mono lm ln mode c m n e1 e2 senv a
+                have value_mono lm ln mode c m n e1 e2 senv b
+                have value_mono lm ln mode c m n e1 e2 senv d
             _                  -> auto
 
 lemma refines_ok r1 r2 v : r1~Result Value Unknown, r2~Result Value Unknown, v~Value, refines r1 r2, r1 == Ok v
@@ -3069,8 +3093,38 @@ export lemma monotone c m n t v : c~Context, m~Model, n~Model, t~Term, v~Value, 
         have eval_is c n t
         let r1 = value (level AsGiven c m m.fuel) AsGiven c m [] [] t
         let r2 = value (level AsGiven c n n.fuel) AsGiven c n [] [] t
-        have value_mono (level AsGiven c m m.fuel) (level AsGiven c n n.fuel) c m n [] [] [] t
+        have value_mono (level AsGiven c m m.fuel) (level AsGiven c n n.fuel) AsGiven c m n [] [] [] t
         have refines_ok r1 r2 v
+
+# Unfolding at `l` levels answers wherever unfolding at `k <= l` does, and
+# the same, whatever the models' fuel (`p`, `q`).
+lemma levels_more c m p q k l : c~Context, m~Model, p~Nat, q~Nat, k~Nat, l~Nat, k <= l
+    ensures forall e1 e2 senv t : e1~List (Result Value Unknown), e2~List (Result Value Unknown), senv~List Sort, t~Term, envs_refine e1 e2
+                                  implies refines ((level Unfolding c (with_fuel m p) k).value e1 senv t) ((level Unfolding c (with_fuel m q) l).value e2 senv t)
+    proof
+        if k == 0
+            auto
+        else
+            have levels_more c m p q (k - 1) (l - 1)
+            have sorts_fuel c m p
+            have sorts_fuel c m q
+            let lm = level Unfolding c (with_fuel m p) (k - 1)
+            let ln = level Unfolding c (with_fuel m q) (l - 1)
+            have value_mono lm ln Unfolding c (with_fuel m p) (with_fuel m q) e1 e2 senv t
+
+# Fuel monotonicity: a definite answer of unfolding at some fuel is the
+# answer at more fuel.
+export lemma unfolding_more_fuel c m t v k l : c~Context, m~Model, t~Term, v~Value, k~Nat, l~Nat, k <= l,
+                                               eval_unfolding c (with_fuel m k) t == Ok v
+    ensures eval_unfolding c (with_fuel m l) t == Ok v
+    proof
+        have levels_more c m k l k l
+        have sorts_fuel c m k
+        have sorts_fuel c m l
+        let lm = level Unfolding c (with_fuel m k) k
+        let ln = level Unfolding c (with_fuel m l) l
+        have value_mono lm ln Unfolding c (with_fuel m k) (with_fuel m l) [] [] [] t
+        have refines_ok (value lm Unfolding c (with_fuel m k) [] [] t) (value ln Unfolding c (with_fuel m l) [] [] t) v
 
 # ── In a total model every term has a value ──────────────────────────────────
 
