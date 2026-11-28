@@ -131,11 +131,12 @@
 # answer at more fuel (`unfolding_more_fuel`).
 #
 # `before` is a strict total order on values (`before_irreflexive`,
-# `before_transitive`, `before_total`). S6 also owes these, which this
-# module is written to and states only in comments: two normal forms
-# are equal exactly when they are the same function (so `normal_arrays`
-# satisfies `arrays_ok`); and the lemma that every sort of a context has a
-# value (`value_of`, from the kept witnesses), which waits for #84.
+# `before_transitive`, `before_total`). Every sort of a context without
+# parameters has a value (`value_of_sort`): `value_of` gives one, from the
+# kept witnesses, in every model whose arrays include the constant arrays
+# its `konst` names. S6 also owes this, which this module is written to and
+# states only in comments: two normal forms are equal exactly when they
+# are the same function (so `normal_arrays` satisfies `arrays_ok`).
 #
 # **Every interpretation is a `Model`** (#85). `checks_sound` says "for
 # every `Model` …"; that means "in every interpretation of the context"
@@ -480,6 +481,181 @@ fn witnesses_size ws -> n : ws~List Witness, n~Nat
         []        -> 1
         w :: rest -> 1 + witness_size w + witnesses_size rest
 
+# What `value_of` gave for sort `s` is a value of it in `m`.
+export fn sort_value c m s r -> b : c~Context, m~Model, s~Sort, r~Option Value, b~Bool
+    match r
+        Some v -> of_sort c m s v
+        None   -> False
+
+# What `konst` gave for the array sort `s` is an array of it in `m`.
+export fn konst_in m s r -> b : m~Model, s~Sort, r~Option Nat, b~Bool
+    match r
+        Some k -> m.array_in s k
+        None   -> False
+
+# What `sort_value` and `konst_in` are, for other modules (their bodies are
+# sealed there): to give `value_of_sort` its premise and use its
+# conclusion.
+export lemma sort_value_def c m s r : c~Context, m~Model, s~Sort, r~Option Value
+    ensures sort_value c m s r
+        == match r
+            Some v -> of_sort c m s v
+            None   -> False
+
+export lemma konst_in_def m s r : m~Model, s~Sort, r~Option Nat
+    ensures konst_in m s r
+        == match r
+            Some k -> m.array_in s k
+            None   -> False
+
+# Every sort of a context with no parameter free in it has a value:
+# `value_of` gives one, in every model whose arrays include the constant
+# arrays `konst` names at the context's array sorts. It rests on `term.datatypes_hold`: each datatype's kept witness
+# fits its sort, with the datatypes before it accepted.
+export lemma value_of_sort c m konst s : c~Context, m~Model, konst~(Sort -> Value -> Option Nat), s~Sort,
+                                         closed: term.sort_ok (term.signature c) 0 s,
+                                         constants: forall i w v : i~Sort, w~Sort, v~Value,
+                                         term.sort_ok (term.signature c) 0 (Arr i w) and of_sort c m w v implies konst_in m (Arr i w) (konst (Arr i w) v)
+    ensures sort_value c m s (value_of (term.signature c) konst s)
+    proof
+        let sig = term.signature c
+        match s
+            Arr i w     ->
+                have value_of_sort c m konst w
+                match value_of sig konst w
+                    Some v -> have constants i w v
+                    None   -> auto
+            Data d args ->
+                have values_sort c m konst args
+                match values_of sig konst args
+                    Some vs -> have kept_sort c m konst d args vs
+            Unin u args -> have zero_in m.domain u args
+            _           -> auto
+
+# The values `values_of` gives for sorts with no parameter free are of
+# those sorts.
+lemma values_sort c m konst ss : c~Context, m~Model, konst~(Sort -> Value -> Option Nat), ss~List Sort,
+                                 closed: term.sorts_ok (term.signature c) 0 ss,
+                                 constants: forall i w v : i~Sort, w~Sort, v~Value,
+                                 term.sort_ok (term.signature c) 0 (Arr i w) and of_sort c m w v implies konst_in m (Arr i w) (konst (Arr i w) v)
+    ensures match values_of (term.signature c) konst ss
+        Some vs -> fields_of_sort c m ss vs
+        None    -> False
+    proof
+        match ss
+            []        -> auto
+            s :: rest ->
+                have value_of_sort c m konst s
+                have values_sort c m konst rest
+
+# Datatype `e`'s kept witness, at arguments `args` whose values are `vs`,
+# is a value of `(e args)`.
+lemma kept_sort c m konst e args vs : c~Context, m~Model, konst~(Sort -> Value -> Option Nat), e~Nat, args~List Sort,
+                                      vs~List Value, e < len (term.signature c).datatypes,
+                                      list.length args == list.length (term.signature c).datatypes[e].params,
+                                      closed: term.sorts_ok (term.signature c) 0 args, fields_of_sort c m args vs,
+                                      constants: forall i w v : i~Sort, w~Sort, v~Value,
+                                      term.sort_ok (term.signature c) 0 (Arr i w) and of_sort c m w v implies konst_in m (Arr i w) (konst (Arr i w) v)
+    ensures sort_value c m (Data e args) (kept_at (term.signature c) konst e args vs)
+    proof
+        decreasing (e, witness_size (if e < len (term.signature c).values then (term.signature c).values[e] else WTrue) + 2)
+        let sig = term.signature c
+        let n = list.length sig.datatypes[e].params
+        have term.datatypes_hold c e
+        have term.datatype_ok_def sig e
+        have term.instantiate_params args n 0
+        have term.instantiate_def args (Data e (term.params_of n 0))
+        have witness_sort c m konst e args vs sig.values[e] (Data e (term.params_of n 0))
+
+# Witness `w`, part of datatype `d`'s kept witness and fitting template
+# sort `t` (whose parameters are `args`, with values `vs`), gives a value
+# of `t` at `args`.
+lemma witness_sort c m konst d args vs w t : c~Context, m~Model, konst~(Sort -> Value -> Option Nat), d~Nat,
+                                             args~List Sort, vs~List Value, w~Witness, t~Sort,
+                                             term.fits (term.signature c) d (list.length args) w t,
+                                             closed: term.sort_ok (term.signature c) 0 (term.instantiate args t),
+                                             fields_of_sort c m args vs,
+                                             constants: forall i w2 v : i~Sort, w2~Sort, v~Value,
+                                             term.sort_ok (term.signature c) 0 (Arr i w2) and of_sort c m w2 v implies konst_in m (Arr i w2) (konst (Arr i w2) v)
+    ensures sort_value c m (term.instantiate args t) (witness_value (term.signature c) konst d args vs w t)
+    proof
+        decreasing (d, witness_size w + 1)
+        let sig = term.signature c
+        have term.fits_def sig d (list.length args) w t
+        have term.instantiate_def args t
+        match (w, t)
+            (WConst v, Arr i e)       ->
+                have witness_sort c m konst d args vs v e
+                match witness_value sig konst d args vs v e
+                    Some x ->
+                        let a = Arr (term.instantiate args i) (term.instantiate args e)
+                        have constants (term.instantiate args i) (term.instantiate args e) x
+                        match konst a x
+                            Some k -> have of_sort c m a (ArrayElem k) == m.array_in a k
+                    None   -> auto
+            (WParam k, Param _)       -> have field_at c m args vs k
+            (WCon k fs, Data e targs) ->
+                match term.ctor sig e k
+                    Some k_ctor ->
+                        let fields = term.field_sorts k_ctor.fields
+                        have term.datatypes_hold c e
+                        have term.datatype_ok_def sig e
+                        have term.ctor_fields_ok sig (list.length targs) sig.datatypes[e].ctors k k_ctor
+                        have term.instantiate_twice_all sig targs args fields
+                        have term.instantiates_ok sig (list.length targs) (list.map (term.instantiate args) targs) fields
+                        have witness_sorts c m konst d args vs fs (list.map (term.instantiate targs) fields)
+                        match witness_values sig konst d args vs fs (list.map (term.instantiate targs) fields)
+                            Some xs ->
+                                have of_sort c m (Data e (list.map (term.instantiate args) targs)) (Constructed k xs)
+                                    == fields_of_sort c m (list.map (term.instantiate (list.map (term.instantiate args) targs)) fields) xs
+            (WOf e ws, Data _ targs)  ->
+                have list.length_map (term.instantiate args) targs
+                have witness_sorts c m konst d args vs ws targs
+                match witness_values sig konst d args vs ws targs
+                    Some xs -> have kept_sort c m konst e (list.map (term.instantiate args) targs) xs
+            (WElement, Unin u targs)  ->
+                have zero_in m.domain u (list.map (term.instantiate args) targs)
+            _                         -> auto
+
+lemma witness_sorts c m konst d args vs ws ts : c~Context, m~Model, konst~(Sort -> Value -> Option Nat), d~Nat,
+                                                args~List Sort, vs~List Value, ws~List Witness, ts~List Sort,
+                                                term.fits_all (term.signature c) d (list.length args) ws ts,
+                                                closed: term.sorts_ok (term.signature c) 0 (list.map (term.instantiate args) ts),
+                                                fields_of_sort c m args vs,
+                                                constants: forall i w2 v : i~Sort, w2~Sort, v~Value,
+                                                term.sort_ok (term.signature c) 0 (Arr i w2) and of_sort c m w2 v implies konst_in m (Arr i w2) (konst (Arr i w2) v)
+    ensures match witness_values (term.signature c) konst d args vs ws ts
+        Some xs -> fields_of_sort c m (list.map (term.instantiate args) ts) xs
+        None    -> False
+    proof
+        decreasing (d, witnesses_size ws + 1)
+        have term.fits_all_def (term.signature c) d (list.length args) ws ts
+        match (ws, ts)
+            ([], [])           -> auto
+            (w :: wr, t :: tr) ->
+                have witness_sort c m konst d args vs w t
+                have witness_sorts c m konst d args vs wr tr
+
+# Every domain has `Element 0`.
+lemma zero_in dom u args : dom~(Nat -> List Sort -> Domain), u~Nat, args~List Sort
+    ensures in_domain (dom u args) 0
+    proof
+        match dom u args
+            UpTo _    -> auto
+            Countable -> auto
+            Unsized   -> auto
+
+# The `k`-th of values of sorts `ss` is of the `k`-th sort.
+lemma field_at c m ss vs k : c~Context, m~Model, ss~List Sort, vs~List Value, k~Nat, fields_of_sort c m ss vs,
+                             k < list.length ss
+    ensures match (list.head (list.drop k ss), list.head (list.drop k vs))
+        (Some s, Some v) -> of_sort c m s v
+        _                -> False
+    proof
+        match (ss, vs)
+            (_ :: sr, _ :: vr) -> if k == 0 then auto else have field_at c m sr vr (k - 1)
+            _                  -> auto
+
 # ── Numbering normal forms ───────────────────────────────────────────────────
 # The model `refutes` builds names each array by a number: its normal form
 # (`Form`) written as bytes (`form_bytes`) and read as a base-256 number
@@ -652,10 +828,12 @@ fn read_stores n bs -> r : n~Nat, bs~List Nat, r~Option (List (Value, Value), Li
 # sort is empty); if their bases agree, at a stored index.
 #
 # "No sort is empty" and "`(Seq e)` is unbounded" rest on every sort of a
-# context having a value, which `value_of` writes: the lemma that it does
-# (from `term.datatypes_hold`, by the kept witnesses) waits for #84.
-# Until then `fresh` and `normal_differ` find their index by computing it,
-# and a sort `value_of` gave none for would make them answer `Truth False`.
+# context having a value: `value_of_sort` proves that `value_of` gives one,
+# in a model whose arrays include the constant arrays `konst` names. That
+# the normal forms' `konst` (below) names arrays of `normal_arrays` is part
+# of what S6 owes about normal forms. `fresh` and `normal_differ` find their
+# index by computing it, and a sort `value_of` gave none for would make
+# them answer `Truth False`.
 
 # How normal forms are made at an index sort.
 enum Kind
@@ -3544,14 +3722,6 @@ export lemma has_value_def c m t : c~Context, m~Model, t~Term
 
 # ── Every definition's equation is an axiom of the context ───────────────────
 
-# A list fact `std.list` doesn't state (#679).
-lemma drop_length_append l y z : l~List a, y~a, z~List a
-    ensures list.head (list.drop (list.length l) (l ++ (y :: z))) == Some y
-    proof
-        match l
-            []        -> auto
-            _ :: rest -> have drop_length_append rest y z
-
 # The parameters of a binder list, `Var (k - 1)` … `Var 0`, have its sorts,
 # in order.
 lemma params_sorted sig ss e : sig~Sig, ss~List Sort, e~List Sort
@@ -3563,7 +3733,7 @@ lemma params_sorted sig ss e : sig~Sig, ss~List Sort, e~List Sort
                 let env = list.reverse rest ++ (x :: e)
                 have list.reverse_cons_append rest x e
                 have list.length_reverse rest
-                have drop_length_append (list.reverse rest) x e
+                have list.drop_append (list.reverse rest) (x :: e)
                 have term.sort_of_var sig env (list.length rest)
                 have params_sorted sig rest (x :: e)
                 have term.sorts_of_cons sig env (Var (list.length rest)) (params_from (list.length rest))

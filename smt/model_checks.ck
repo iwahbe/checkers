@@ -843,3 +843,67 @@ check answer.without_core_error b"sat\n(error \"line 9 column 15: unsat core is 
     == b"sat\n(error \"line 9 column 15: unsat core is not available\")\n((x 3))"
 check answer.without_core_error b"sat\n(error \"line 3 column 15: unknown constant y\")\n((x 3))" CORE_QUERY
     == b"sat\n(error \"line 3 column 15: unknown constant y\")\n((x 3))"
+
+# ── A value of every sort ────────────────────────────────────────────────────
+
+# Every closed term of a context has a sort with a value, in every model
+# whose arrays include the constant arrays `konst` names.
+lemma term_sort_has_value c m konst t s : c~Context, m~Model, konst~(Sort -> Value -> Option Nat), t~Term, s~Sort,
+                                          term.sort_of (term.signature c) [] t == Ok s,
+                                          constants: forall i w v : i~Sort, w~Sort, v~Value,
+                                          term.sort_ok (term.signature c) 0 (Arr i w) and model.of_sort c m w v
+                                          implies model.konst_in m (Arr i w) (konst (Arr i w) v)
+    ensures model.sort_value c m s (model.value_of (term.signature c) konst s)
+    proof
+        have term.sort_of_ok c [] t s
+        have model.value_of_sort c m konst s
+
+# Every constant array named `0`.
+fn zero_konst s v -> r : s~Sort, v~Value, r~Option Nat
+    Some 0
+
+# Where `0` names an array at every array sort of the context, `zero_konst`
+# names arrays of the model: `value_of_sort`'s premise.
+lemma zero_constants c m : c~Context, m~Model,
+                           zero: forall a : a~Sort, term.sort_ok (term.signature c) 0 a implies m.array_in a 0
+    ensures forall i w v : i~Sort, w~Sort, v~Value,
+                           term.sort_ok (term.signature c) 0 (Arr i w) and model.of_sort c m w v
+                           implies model.konst_in m (Arr i w) (zero_konst (Arr i w) v)
+    proof
+        have zero (Arr i w)
+        have model.konst_in_def m (Arr i w) (zero_konst (Arr i w) v)
+
+# In such a model every sort with no parameter free has a value, which
+# `value_of` gives: the premise discharged, the conclusion used.
+lemma zero_array_value c m s : c~Context, m~Model, s~Sort, closed: term.sort_ok (term.signature c) 0 s,
+                               zero: forall a : a~Sort, term.sort_ok (term.signature c) 0 a implies m.array_in a 0
+    ensures model.value_of (term.signature c) zero_konst s != None
+    proof
+        have zero_constants c m
+        have model.value_of_sort c m zero_konst s
+        have model.sort_value_def c m s (model.value_of (term.signature c) zero_konst s)
+
+# A datatype with a parameter, an array of it and an uninterpreted sort in
+# its one constructor: its kept witness at `Int` is `box 0 ((as const …) 0)
+# U!val!0`, a value of `(Box Int)` in the normal forms' model, whose `konst`
+# is `model.const_array`.
+let BOX = b"(set-logic ALL)\n(declare-sort U 0)\n(declare-datatypes ((Box 1)) ((par (T) ((box (item T) (cells (Array Int T)) (tag U))))))\n(declare-const b (Box Int))\n(assert (not false))\n(check-sat)\n"
+
+fn box_konst s v -> r : s~Sort, v~Value, r~Option Nat
+    match model.const_array (term.signature (context BOX)) (\_ _ -> Countable) s v
+        Some (ArrayElem k) -> Some k
+        _                  -> None
+
+let BOX_MODEL = model.normal_arrays (term.signature (context BOX)) NOTHING
+
+let BOX_SORT = term.Data 0 [Int]
+
+# Whether `r` is `box 0 a (Element 0)` for an array `a`.
+fn box_shaped r -> b : r~Option Value, b~Bool
+    match r
+        Some (Constructed 0 [Integer 0, ArrayElem _, Element 0]) -> True
+        _                                                        -> False
+
+check term.sort_ok (term.signature (context BOX)) 0 BOX_SORT
+check box_shaped (model.value_of (term.signature (context BOX)) box_konst BOX_SORT)
+check model.sort_value (context BOX) BOX_MODEL BOX_SORT (model.value_of (term.signature (context BOX)) box_konst BOX_SORT)
