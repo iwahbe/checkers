@@ -2861,6 +2861,35 @@ export transparent fn bind_terms binds -> ts : binds~List (Name, Term), ts~List 
         []             -> []
         (_, t) :: rest -> t :: bind_terms rest
 
+# Each `(lambda ((x xs)) body)` in `ts`, with the sorts `senv` of the
+# variables bound around it (closed terms: `senv` starts empty; a `let`
+# whose bound terms have no sorts is not looked into).
+export transparent fn lambdas_in c ts -> r : c~Context, ts~List Term, r~List (List Sort, Sort, Term)
+    lambdas_all (signature c) [] ts
+
+fn lambdas_all sig senv ts -> r : sig~Sig, senv~List Sort, ts~List Term,
+                                  r~List (List Sort, Sort, Term)
+    match ts
+        []        -> []
+        t :: rest -> lambdas_of sig senv t ++ lambdas_all sig senv rest
+
+fn lambdas_of sig senv t -> r : sig~Sig, senv~List Sort, t~Term, r~List (List Sort, Sort, Term)
+    match t
+        Var _          -> []
+        App _ args     -> lambdas_all sig senv args
+        Let binds body ->
+            let here = lambdas_bound sig senv binds
+            match sorts_of sig senv (bind_terms binds)
+                Ok ss -> here ++ lambdas_of sig (list.reverse ss ++ senv) body
+                Err _ -> here
+        Lam _ xs body  -> (senv, xs, body) :: lambdas_of sig (xs :: senv) body
+
+fn lambdas_bound sig senv binds -> r : sig~Sig, senv~List Sort, binds~List (Name, Term),
+                                       r~List (List Sort, Sort, Term)
+    match binds
+        []             -> []
+        (_, t) :: rest -> lambdas_of sig senv t ++ lambdas_bound sig senv rest
+
 lemma bound_sorts_terms sig env binds : sig~Sig, env~List Sort, binds~List (Name, Term)
     ensures bound_sorts sig env binds == sorts_of sig env (bind_terms binds)
     proof

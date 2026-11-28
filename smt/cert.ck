@@ -590,8 +590,12 @@ export transparent fn values_among c m ts vs -> r : c~Context, m~Model, ts~List 
 #   whose functions answer wherever these terms need them);
 # - `axioms`, `definitions`: each axiom of `c`, and each definition's
 #   equation, holds at the values of the terms `refutation` uses;
-# - `arrays`: the array laws hold, and the model answers, at those values
-#   (`model.arrays_ok_at`, `model.arrays_total_at`).
+# - `arrays`: the array laws but `lambda`'s hold, and the model answers, at
+#   those values (`model.arrays_ok_but_lambda`,
+#   `model.arrays_total_but_lambda`);
+# - `lambdas`: each `lambda` among those terms (`term.lambdas_in`) is, at those
+#   values, its body, and the model names its array (`model.lambda_law`,
+#   `model.gives_lambda`).
 #
 # Why this isn't vacuous, an argument outside Checkers (as `smt.model`'s
 # header gives it): `checks` requires every term used to be a closed `Bool`
@@ -601,10 +605,9 @@ export transparent fn values_among c m ts vs -> r : c~Context, m~Model, ts~List 
 # for an accepted refutation, and `axiom_premises_ok` shows that no axiom of
 # `c` makes `axioms` unsatisfiable at no values; `model.definitions_ok`
 # shows the same for `definitions`, every definition's equation being
-# well-sorted. Today's steps use only
-# `facts` and `defined`; `axioms`, `definitions` and `arrays` are there for
-# the theory steps to come (S6b–S6e), so that adding them doesn't change
-# this statement.
+# well-sorted. Today's steps use only `facts` and `defined`; `axioms`,
+# `definitions`, `arrays` and `lambdas` are there for the theory steps to
+# come (S6b–S6e), so that adding them doesn't change this statement.
 export lemma checks_sound c goal refutation m : c~Context, goal~Term, refutation~Refutation, checks c goal refutation, m~Model,
                                                 facts: model.holds_all c m (term.facts c),
                                                 defined: (forall t : t~Term, list.contains (terms c goal refutation) t,
@@ -614,11 +617,16 @@ export lemma checks_sound c goal refutation m : c~Context, goal~Term, refutation
                                                 definitions: (forall n d vs : n~Nat, d~Def, vs~List Value,
                                                               list.contains (term.defs c) (n, d), values_among c m (terms c goal refutation) vs,
                                                               model.holds_at c m (model.definition_axiom n d) vs),
-                                                arrays: (forall s a b i j x env senv xs body : s~Sort, a~Nat, b~Nat, i~Value, j~Value,
-                                                         x~Value, env~List Value, senv~List Sort, xs~Sort, body~Term,
-                                                         values_among c m (terms c goal refutation) (ArrayElem a :: ArrayElem b :: i :: j :: x :: env),
-                                                         model.arrays_ok_at c m s a b i j x env senv xs body
-                                                         and model.arrays_total_at c m s a b i j x env senv xs body)
+                                                arrays: (forall s a b i j x : s~Sort, a~Nat, b~Nat, i~Value, j~Value, x~Value,
+                                                         values_among c m (terms c goal refutation) [ArrayElem a, ArrayElem b, i, j, x],
+                                                         model.arrays_ok_but_lambda c m s a b i j x
+                                                         and model.arrays_total_but_lambda c m s a b i j x),
+                                                lambdas: (forall s env senv xs body i : s~Sort, env~List Value, senv~List Sort,
+                                                          xs~Sort, body~Term, i~Value,
+                                                          list.contains (term.lambdas_in c (terms c goal refutation)) (senv, xs, body),
+                                                          values_among c m (terms c goal refutation) (i :: env),
+                                                          model.lambda_law c m s env senv xs body i
+                                                          and model.gives_lambda c m s env senv xs body)
     ensures model.holds c m goal
     proof
         if model.holds c m goal
@@ -695,12 +703,16 @@ export lemma not_refuted c goal refutation m n : c~Context, goal~Term, refutatio
                                                                list.contains (term.defs c) (d_n, d),
                                                                values_among c n (terms c goal refutation) vs,
                                                                model.holds_at c n (model.definition_axiom d_n d) vs),
-                                                 arrays: (forall s a b i j x env senv xs body : s~Sort, a~Nat, b~Nat, i~Value,
-                                                          j~Value, x~Value, env~List Value, senv~List Sort, xs~Sort, body~Term,
-                                                          values_among c n (terms c goal refutation)
-                                                          (ArrayElem a :: ArrayElem b :: i :: j :: x :: env),
-                                                          model.arrays_ok_at c n s a b i j x env senv xs body
-                                                          and model.arrays_total_at c n s a b i j x env senv xs body),
+                                                 arrays: (forall s a b i j x : s~Sort, a~Nat, b~Nat, i~Value, j~Value, x~Value,
+                                                          values_among c n (terms c goal refutation) [ArrayElem a, ArrayElem b, i, j, x],
+                                                          model.arrays_ok_but_lambda c n s a b i j x
+                                                          and model.arrays_total_but_lambda c n s a b i j x),
+                                                 lambdas: (forall s env senv xs body i : s~Sort, env~List Value, senv~List Sort,
+                                                           xs~Sort, body~Term, i~Value,
+                                                           list.contains (term.lambdas_in c (terms c goal refutation)) (senv, xs, body),
+                                                           values_among c n (terms c goal refutation) (i :: env),
+                                                           model.lambda_law c n s env senv xs body i
+                                                           and model.gives_lambda c n s env senv xs body),
                                                  said: (forall q v : q~model.Asked, v~Value, model.said m q == Some v,
                                                         model.said n q == Some v),
                                                  named: (forall s k : s~Sort, k~Nat, m.array_in s k, n.array_in s k),
@@ -787,4 +799,29 @@ export lemma checks_sound_everywhere c goal refutation m : c~Context, goal~Term,
     ensures model.holds c m goal
     proof
         have all_defined c goal refutation m
+        have arrays_but_lambda c m
+        have lambdas_everywhere c m
         have checks_sound c goal refutation m
+
+# The array laws at all values give those but `lambda`'s, and `lambda`'s.
+lemma arrays_but_lambda c m : c~Context, m~Model,
+                              arrays: (forall s a b i j x env senv xs body : s~Sort, a~Nat, b~Nat, i~Value, j~Value,
+                                       x~Value, env~List Value, senv~List Sort, xs~Sort, body~Term,
+                                       model.arrays_ok_at c m s a b i j x env senv xs body
+                                       and model.arrays_total_at c m s a b i j x env senv xs body)
+    ensures forall s a b i j x : s~Sort, a~Nat, b~Nat, i~Value, j~Value, x~Value,
+                                 model.arrays_ok_but_lambda c m s a b i j x and model.arrays_total_but_lambda c m s a b i j x
+    proof
+        have arrays s a b i j x [] [] s (term.Var 0)
+        have model.arrays_split c m s a b i j x [] [] s (term.Var 0)
+
+lemma lambdas_everywhere c m : c~Context, m~Model,
+                               arrays: (forall s a b i j x env senv xs body : s~Sort, a~Nat, b~Nat, i~Value, j~Value,
+                                        x~Value, env~List Value, senv~List Sort, xs~Sort, body~Term,
+                                        model.arrays_ok_at c m s a b i j x env senv xs body
+                                        and model.arrays_total_at c m s a b i j x env senv xs body)
+    ensures forall s env senv xs body i : s~Sort, env~List Value, senv~List Sort, xs~Sort, body~Term, i~Value,
+                                          model.lambda_law c m s env senv xs body i and model.gives_lambda c m s env senv xs body
+    proof
+        have arrays s 0 0 i i i env senv xs body
+        have model.arrays_split c m s 0 0 i i i env senv xs body
