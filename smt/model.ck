@@ -4613,3 +4613,347 @@ lemma normal_sum_read sig dom ix w a b l i : sig~Sig, dom~(Nat -> List Sort -> D
                                 have normal_sum sig dom (Arr ix w) a b == None
                     _                      -> auto
             _                -> auto
+
+# A store into a normal form reads, at every index of its sort, the stored
+# value at its index and the old array's elsewhere.
+lemma normal_store_read sig dom ix w k j x l i : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort, k~Nat,
+                                                 j~Value, x~Value, l~Nat, i~Value,
+                                                 normal_store sig dom (Arr ix w) k j x == Some l, indexed sig dom ix i
+    ensures normal_select l i == (if i == j then Some x else normal_select k i)
+    proof
+        match decode k
+            Some f ->
+                have index_of (Arr ix w) == Some ix
+                have normal_store sig dom (Arr ix w) k j x == numbered (normalize sig dom ix f.base ((j, x) :: f.stores))
+                match normalize sig dom ix f.base ((j, x) :: f.stores)
+                    Some h ->
+                        have decode_code h
+                        have l == code h
+                        have normalize_ok sig dom ix f.base ((j, x) :: f.stores) h i
+                    None   -> have numbered (normalize sig dom ix f.base ((j, x) :: f.stores)) == None
+            None   -> auto
+
+# `normal_value` asks of the arrays in a value only that they are below
+# its bound: any bound above them will do.
+lemma normal_rebound sig dom s v b c : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, v~Value, b~Nat, c~Nat,
+                                       normal_value sig dom s v b, arrays_below v c
+    ensures normal_value sig dom s v c
+    proof
+        decreasing value_size v
+        match (s, v)
+            (Seq e, Sequence xs)            -> have all_rebound sig dom e xs b c
+            (Data d args, Constructed k fs) ->
+                match term.ctor sig d k
+                    Some k_ctor -> have fields_rebound sig dom (list.map (term.instantiate args) (term.field_sorts k_ctor.fields)) fs b c
+                    None        -> auto
+            _                               -> auto
+
+lemma all_rebound sig dom s vs b c : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, vs~List Value, b~Nat, c~Nat,
+                                     normal_values sig dom s vs b, all_arrays_below vs c
+    ensures normal_values sig dom s vs c
+    proof
+        decreasing values_size vs
+        match vs
+            []        -> auto
+            v :: rest ->
+                have normal_rebound sig dom s v b c
+                have all_rebound sig dom s rest b c
+
+lemma fields_rebound sig dom ss vs b c : sig~Sig, dom~(Nat -> List Sort -> Domain), ss~List Sort, vs~List Value, b~Nat,
+                                         c~Nat, normal_fields sig dom ss vs b, all_arrays_below vs c
+    ensures normal_fields sig dom ss vs c
+    proof
+        decreasing values_size vs
+        match (ss, vs)
+            (s :: sr, v :: vr) ->
+                have normal_rebound sig dom s v b c
+                have fields_rebound sig dom sr vr b c
+            _                  -> auto
+
+# Values of the normal forms stay so through normalizing.
+
+lemma normal_below sig dom s v b : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, v~Value, b~Nat,
+                                   normal_value sig dom s v b
+    ensures arrays_below v b
+    proof
+        decreasing value_size v
+        match (s, v)
+            (Seq e, Sequence xs)            -> have all_normal_below sig dom e xs b
+            (Data d args, Constructed k fs) ->
+                match term.ctor sig d k
+                    Some k_ctor -> have fields_normal_below sig dom (list.map (term.instantiate args) (term.field_sorts k_ctor.fields)) fs b
+                    None        -> auto
+            _                               -> auto
+
+lemma all_normal_below sig dom s vs b : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, vs~List Value, b~Nat,
+                                        normal_values sig dom s vs b
+    ensures all_arrays_below vs b
+    proof
+        decreasing values_size vs
+        match vs
+            []        -> auto
+            v :: rest ->
+                have normal_below sig dom s v b
+                have all_normal_below sig dom s rest b
+
+lemma fields_normal_below sig dom ss vs b : sig~Sig, dom~(Nat -> List Sort -> Domain), ss~List Sort, vs~List Value,
+                                            b~Nat, normal_fields sig dom ss vs b
+    ensures all_arrays_below vs b
+    proof
+        decreasing values_size vs
+        match (ss, vs)
+            (s :: sr, v :: vr) ->
+                have normal_below sig dom s v b
+                have fields_normal_below sig dom sr vr b
+            _                  -> auto
+
+lemma below_more v b c : v~Value, b~Nat, c~Nat, arrays_below v b, b <= c
+    ensures arrays_below v c
+    proof
+        decreasing value_size v
+        match v
+            Sequence xs      -> have all_below_more xs b c
+            Constructed _ fs -> have all_below_more fs b c
+            _                -> auto
+
+lemma all_below_more vs b c : vs~List Value, b~Nat, c~Nat, all_arrays_below vs b, b <= c
+    ensures all_arrays_below vs c
+    proof
+        decreasing values_size vs
+        match vs
+            []        -> auto
+            v :: rest ->
+                have below_more v b c
+                have all_below_more rest b c
+
+lemma read_normal sig dom w st base i ix b : sig~Sig, dom~(Nat -> List Sort -> Domain), w~Sort, st~List (Value, Value),
+                                             base~Value, i~Value, ix~Sort, b~Nat, normal_value sig dom w base b,
+                                             normal_stores sig dom ix w st b
+    ensures normal_value sig dom w (read_stores_at st base i) b
+    proof
+        match st
+            []             -> auto
+            (_, _) :: rest -> have read_normal sig dom w rest base i ix b
+
+lemma insert_normal sig dom ix w j x st b : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort, j~Value, x~Value,
+                                            st~List (Value, Value), b~Nat, normal_value sig dom ix j b,
+                                            normal_value sig dom w x b, normal_stores sig dom ix w st b
+    ensures normal_stores sig dom ix w (insert_store j x st) b
+    proof
+        match st
+            []        -> auto
+            _ :: rest -> have insert_normal sig dom ix w j x rest b
+
+lemma sort_normal sig dom ix w st b : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort, st~List (Value, Value),
+                                      b~Nat, normal_stores sig dom ix w st b
+    ensures normal_stores sig dom ix w (sort_stores st) b
+    proof
+        match st
+            []             -> auto
+            (j, x) :: rest ->
+                have sort_normal sig dom ix w rest b
+                have insert_normal sig dom ix w j x (sort_stores rest) b
+
+lemma drop_normal sig dom ix w base st b : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort, base~Value,
+                                           st~List (Value, Value), b~Nat, normal_stores sig dom ix w st b
+    ensures normal_stores sig dom ix w (drop_base base st) b
+    proof
+        match st
+            []        -> auto
+            _ :: rest -> have drop_normal sig dom ix w base rest b
+
+lemma elements_normal sig dom u args k count last b : sig~Sig, dom~(Nat -> List Sort -> Domain), u~Nat, args~List Sort,
+                                                      k~Nat, count~Nat, last~Nat, b~Nat, dom u args == UpTo last,
+                                                      k + count <= last + 1
+    ensures normal_values sig dom (Unin u args) (elements_from k count) b
+    proof
+        decreasing count
+        if count == 0 then auto else have elements_normal sig dom u args (k + 1) (count - 1) last b
+
+lemma listed_values_normal sig dom ix es b : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, es~List Value, b~Nat,
+                                             index_kind sig dom ix == Listed es
+    ensures normal_values sig dom ix es b
+    proof
+        match ix
+            Unin u args ->
+                match dom u args
+                    UpTo n -> have elements_normal sig dom u args 0 (n + 1) n b
+                    _      -> auto
+            _           -> auto
+
+lemma listed_normal sig dom ix w es st base a b : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort,
+                                                  es~List Value, st~List (Value, Value), base~Value, a~Value, b~Nat,
+                                                  normal_values sig dom ix es b, normal_value sig dom w base b,
+                                                  normal_stores sig dom ix w st b
+    ensures normal_stores sig dom ix w (listed_stores es st base a) b
+    proof
+        match es
+            []        -> auto
+            e :: rest ->
+                have read_normal sig dom w st base e ix b
+                have listed_normal sig dom ix w rest st base a b
+
+# What `normalize` makes of normal values is normal.
+lemma normalize_normal sig dom ix w base stores f b : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort,
+                                                      base~Value, stores~List (Value, Value), f~Form, b~Nat,
+                                                      normalize sig dom ix base stores == Some f,
+                                                      normal_value sig dom w base b, normal_stores sig dom ix w stores b
+    ensures normal_value sig dom w f.base b and normal_stores sig dom ix w f.stores b
+    proof
+        match index_kind sig dom ix
+            Listed es ->
+                have listed_values_normal sig dom ix es b
+                match es
+                    first :: others ->
+                        have read_normal sig dom w stores base first ix b
+                        have listed_normal sig dom ix w others stores base (read_stores_at stores base first) b
+                    []              -> auto
+            Unbounded ->
+                have sort_normal sig dom ix w stores b
+                have drop_normal sig dom ix w base (sort_stores stores) b
+            Opaque    -> auto
+
+lemma stores_rebound sig dom ix w st b c : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort,
+                                           st~List (Value, Value), b~Nat, c~Nat, normal_stores sig dom ix w st b,
+                                           stores_below st c
+    ensures normal_stores sig dom ix w st c
+    proof
+        match st
+            []             -> auto
+            (j, x) :: rest ->
+                have normal_rebound sig dom ix j b c
+                have normal_rebound sig dom w x b c
+                have stores_rebound sig dom ix w rest b c
+
+# A canonical form of normal values, at any bound, is a normal form.
+lemma form_normal_in sig dom ix w f b : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort, f~Form, b~Nat,
+                                        canonical sig dom ix f.base f.stores, normal_value sig dom w f.base b,
+                                        normal_stores sig dom ix w f.stores b
+    ensures normal_in sig dom (Arr ix w) (code f)
+    proof
+        have decode_code f
+        have form_below f
+        have normal_rebound sig dom w f.base b (code f)
+        have stores_rebound sig dom ix w f.stores b (code f)
+
+lemma stores_below_more st b c : st~List (Value, Value), b~Nat, c~Nat, stores_below st b, b <= c
+    ensures stores_below st c
+    proof
+        match st
+            []             -> auto
+            (j, x) :: rest ->
+                have below_more j b c
+                have below_more x b c
+                have stores_below_more rest b c
+
+lemma stores_normal_below sig dom ix w st b : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort,
+                                              st~List (Value, Value), b~Nat, normal_stores sig dom ix w st b
+    ensures stores_below st b
+    proof
+        match st
+            []             -> auto
+            (j, x) :: rest ->
+                have normal_below sig dom ix j b
+                have normal_below sig dom w x b
+                have stores_normal_below sig dom ix w rest b
+
+# A normal form's parts are normal at any bound above its number.
+lemma normal_parts sig dom ix w k f c : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort, k~Nat, f~Form, c~Nat,
+                                        normal_in sig dom (Arr ix w) k, decode k == Some f, k <= c
+    ensures normal_value sig dom w f.base c and normal_stores sig dom ix w f.stores c
+    proof
+        have normal_below sig dom w f.base k
+        have below_more f.base k c
+        have normal_rebound sig dom w f.base k c
+        have stores_normal_below sig dom ix w f.stores k
+        have stores_below_more f.stores k c
+        have stores_rebound sig dom ix w f.stores k c
+
+# A store of normal values into a normal form is a normal form.
+lemma normal_store_in sig dom ix w k j x l b : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort, k~Nat, j~Value,
+                                               x~Value, l~Nat, b~Nat, normal_in sig dom (Arr ix w) k,
+                                               normal_value sig dom ix j b, normal_value sig dom w x b,
+                                               normal_store sig dom (Arr ix w) k j x == Some l
+    ensures normal_in sig dom (Arr ix w) l
+    proof
+        let c = k + b
+        match decode k
+            Some f ->
+                have normal_parts sig dom ix w k f c
+                have normal_below sig dom ix j b
+                have below_more j b c
+                have normal_rebound sig dom ix j b c
+                have normal_below sig dom w x b
+                have below_more x b c
+                have normal_rebound sig dom w x b c
+                have index_of (Arr ix w) == Some ix
+                have normal_store sig dom (Arr ix w) k j x == numbered (normalize sig dom ix f.base ((j, x) :: f.stores))
+                match normalize sig dom ix f.base ((j, x) :: f.stores)
+                    Some h ->
+                        have normalize_normal sig dom ix w f.base ((j, x) :: f.stores) h c
+                        have normalize_ok sig dom ix f.base ((j, x) :: f.stores) h j
+                        have form_normal_in sig dom ix w h c
+                    None   -> have numbered (normalize sig dom ix f.base ((j, x) :: f.stores)) == None
+            None   -> auto
+
+lemma keys_normal sig dom ix w st c : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort, st~List (Value, Value),
+                                      c~Nat, normal_stores sig dom ix w st c
+    ensures normal_values sig dom ix (list.keys st) c
+    proof
+        match st
+            []        -> auto
+            _ :: rest -> have keys_normal sig dom ix w rest c
+
+lemma values_append_normal sig dom s xs ys c : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, xs~List Value,
+                                               ys~List Value, c~Nat, normal_values sig dom s xs c,
+                                               normal_values sig dom s ys c
+    ensures normal_values sig dom s (xs ++ ys) c
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have values_append_normal sig dom s rest ys c
+
+lemma sums_normal sig dom ix sa sb ba bb is st c : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort,
+                                                   sa~List (Value, Value), sb~List (Value, Value), ba~Value, bb~Value,
+                                                   is~List Value, st~List (Value, Value), c~Nat,
+                                                   normal_values sig dom ix is c, sums_at sa sb ba bb is == Some st
+    ensures normal_stores sig dom ix Int st c
+    proof
+        match is
+            []        -> auto
+            j :: rest ->
+                match (read_stores_at sa ba j, read_stores_at sb bb j, sums_at sa sb ba bb rest)
+                    (Integer _, Integer _, Some more) -> have sums_normal sig dom ix sa sb ba bb rest more c
+                    _                                 -> auto
+
+# `map +` of two normal forms is a normal form.
+lemma normal_sum_in sig dom ix a b l : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, a~Nat, b~Nat, l~Nat,
+                                       normal_in sig dom (Arr ix Int) a, normal_in sig dom (Arr ix Int) b,
+                                       normal_sum sig dom (Arr ix Int) a b == Some l
+    ensures normal_in sig dom (Arr ix Int) l
+    proof
+        let c = a + b
+        match (decode a, decode b)
+            (Some f, Some g) ->
+                have normal_parts sig dom ix Int a f c
+                have normal_parts sig dom ix Int b g c
+                have keys_normal sig dom ix Int f.stores c
+                have keys_normal sig dom ix Int g.stores c
+                let is = list.keys f.stores ++ list.keys g.stores
+                have values_append_normal sig dom ix (list.keys f.stores) (list.keys g.stores) c
+                have index_of (Arr ix Int) == Some ix
+                match (f.base, g.base)
+                    (Integer x, Integer y) ->
+                        match sums_at f.stores g.stores f.base g.base is
+                            Some st ->
+                                have sums_normal sig dom ix f.stores g.stores f.base g.base is st c
+                                have normal_sum sig dom (Arr ix Int) a b == numbered (normalize sig dom ix (Integer (x + y)) st)
+                                match normalize sig dom ix (Integer (x + y)) st
+                                    Some h ->
+                                        have normalize_normal sig dom ix Int (Integer (x + y)) st h c
+                                        have normalize_ok sig dom ix (Integer (x + y)) st h (Integer 0)
+                                        have form_normal_in sig dom ix Int h c
+                                    None   -> have numbered (normalize sig dom ix (Integer (x + y)) st) == None
+                            None    -> have normal_sum sig dom (Arr ix Int) a b == None
+                    _                      -> auto
+            _                -> auto
