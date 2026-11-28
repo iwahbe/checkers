@@ -2188,6 +2188,28 @@ fn private_cons(e: &Elab, user: &str) -> HashSet<String> {
         .collect()
 }
 
+/// Whether `x` is a value of a constructor in `hide` (another package's
+/// private one, §6 rule 9): one shown as `…` for that reason, not because
+/// the model's value is one no program builds.
+fn is_hidden(x: &Sx, hide: &HashSet<String>) -> bool {
+    let con = match x {
+        Sx::Atom(a) => a,
+        Sx::List(items) => match items.first() {
+            Some(Sx::Atom(h)) if h == "as" => match items.get(1) {
+                Some(Sx::Atom(c)) => c,
+                _ => return false,
+            },
+            Some(Sx::Atom(h)) => h,
+            Some(Sx::List(l)) if matches!(l.first(), Some(Sx::Atom(a)) if a == "as") => match l.get(1) {
+                Some(Sx::Atom(c)) => c,
+                _ => return false,
+            },
+            _ => return false,
+        },
+    };
+    hide.contains(con.trim_matches('|'))
+}
+
 /// The counterexample `text` gives, for the variables `shown`. A value of
 /// a constructor in `hide` (another package's private one, §6 rule 9) is
 /// `…`; a variable whose whole value is one isn't listed, but variables
@@ -2222,7 +2244,7 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
                     // say nothing useful, but which cowns are the same one
                     // does (§8.5): `x = y`.
                     let raw = print_sx(&v);
-                    if raw.contains("std.cown.Cown") && raw.contains("!val!") || s == "…" {
+                    if raw.contains("std.cown.Cown") && raw.contains("!val!") || is_hidden(&v, hide) {
                         match cowns.iter_mut().find(|(r, _, _)| *r == raw) {
                             Some((_, _, names)) => names.push(shown[pos].1.clone()),
                             None => cowns.push((raw, lvl, vec![shown[pos].1.clone()])),
@@ -2250,6 +2272,18 @@ mod tests {
         let query = super::options(super::FIRST_RLIMIT) + "(assert false)\n(check-sat)\n";
         let results = super::ask_all_out(&[None, Some(query.clone()), None, Some(query)]);
         assert_eq!(results, [None, Some("unsat\n".into()), None, Some("unsat\n".into())]);
+    }
+
+    /// A value the model gives that no program builds (`Bytes` holding
+    /// elements past a byte) is shown as `…`, and its variable is listed:
+    /// only a value of another package's private constructor is left out.
+    #[test]
+    fn an_unshowable_value_is_listed() {
+        use std::collections::HashSet;
+        let model = "((|#xs#0| (seq.unit 300)) (|#ys#1| (seq.++ (seq.unit 300) (seq.unit 1))) (|#t#2| (|std.time.Instant| 5)))";
+        let shown = [("|#xs#0|", "xs"), ("|#ys#1|", "ys"), ("|#t#2|", "t")].map(|(k, n)| (k.to_string(), n.to_string()));
+        let hide: HashSet<String> = ["std.time.Instant".to_string()].into();
+        assert_eq!(super::render_model(model, &shown, &[], &[], &hide), "xs = …, ys = …");
     }
 
     /// A module verified before (#628) is proved for the compile-time gate
