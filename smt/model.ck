@@ -4508,3 +4508,108 @@ lemma diff_key_differs sa sb base : sa~List (Value, Value), sb~List (Value, Valu
                     have list.contains_append (list.keys sa) (list.keys sb) k
             ((j, _) :: _, [])            -> have list.contains_append (list.keys sa) (list.keys sb) j
             ([], (k, _) :: _)            -> have list.contains_append (list.keys sa) (list.keys sb) k
+
+# A constant array's normal form has no stores, at every index kind.
+lemma normal_const_is sig dom i w v : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort, w~Sort, v~Value
+    ensures normal_const sig dom (Arr i w) v == Some (code (Form v []))
+    proof
+        match index_kind sig dom i
+            Listed es ->
+                have listed_sorted sig dom i es
+                match es
+                    first :: others -> have listed_empty others v
+                    []              -> auto
+            _         -> auto
+
+lemma listed_empty es v : es~List Value, v~Value
+    ensures listed_stores es [] v v == []
+    proof
+        match es
+            []        -> auto
+            _ :: rest -> have listed_empty rest v
+
+# The constant array of a value of the element sort is a normal form.
+lemma const_normal_in sig dom i w v : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort, w~Sort, v~Value,
+                                      normal_value sig dom w v (code (Form v []))
+    ensures normal_in sig dom (Arr i w) (code (Form v []))
+    proof
+        have decode_code (Form v [])
+
+lemma read_absent st b i : st~List (Value, Value), b~Value, i~Value, not (list.contains (list.keys st) i)
+    ensures read_stores_at st b i == b
+    proof
+        match st
+            []        -> auto
+            _ :: rest -> have read_absent rest b i
+
+# `sums_at` adds the two arrays at the indices it is given, and has no
+# store elsewhere.
+lemma sums_read sa sb ba bb is st i x y : sa~List (Value, Value), sb~List (Value, Value), ba~Value, bb~Value, is~List Value,
+                                          st~List (Value, Value), i~Value, x~Int, y~Int, ba == Integer x, bb == Integer y,
+                                          sums_at sa sb ba bb is == Some st, list.contains is i
+    ensures match (read_stores_at sa ba i, read_stores_at sb bb i)
+        (Integer p, Integer q) -> read_stores_at st (Integer (x + y)) i == Integer (p + q)
+        _                      -> False
+    proof
+        match is
+            []        -> auto
+            j :: rest ->
+                match (read_stores_at sa ba j, read_stores_at sb bb j, sums_at sa sb ba bb rest)
+                    (Integer _, Integer _, Some more) -> if j == i then auto else have sums_read sa sb ba bb rest more i x y
+                    _                                 -> auto
+
+lemma sums_elsewhere sa sb ba bb is st i x y : sa~List (Value, Value), sb~List (Value, Value), ba~Value, bb~Value,
+                                               is~List Value, st~List (Value, Value), i~Value, x~Int, y~Int,
+                                               sums_at sa sb ba bb is == Some st, not (list.contains is i)
+    ensures read_stores_at st (Integer (x + y)) i == Integer (x + y)
+    proof
+        match is
+            []        -> auto
+            j :: rest ->
+                match (read_stores_at sa ba j, read_stores_at sb bb j, sums_at sa sb ba bb rest)
+                    (Integer _, Integer _, Some more) -> have sums_elsewhere sa sb ba bb rest more i x y
+                    _                                 -> auto
+
+# `map +` of two normal forms reads, at every index of its sort, the sum.
+lemma normal_sum_read sig dom ix w a b l i : sig~Sig, dom~(Nat -> List Sort -> Domain), ix~Sort, w~Sort, a~Nat, b~Nat,
+                                             l~Nat, i~Value, normal_sum sig dom (Arr ix w) a b == Some l,
+                                             indexed sig dom ix i
+    ensures match (normal_select l i, normal_select a i, normal_select b i)
+        (Some (Integer p), Some (Integer q), Some (Integer r)) -> p == q + r
+        _                                                      -> True
+    proof
+        match (decode a, decode b)
+            (Some f, Some g) ->
+                match (f.base, g.base)
+                    (Integer x, Integer y) ->
+                        let is = list.keys f.stores ++ list.keys g.stores
+                        match sums_at f.stores g.stores f.base g.base is
+                            Some st ->
+                                have index_of (Arr ix w) == Some ix
+                                have normal_sum sig dom (Arr ix w) a b == numbered (normalize sig dom ix (Integer (x + y)) st)
+                                match normalize sig dom ix (Integer (x + y)) st
+                                    Some h ->
+                                        have decode_code h
+                                        have l == code h
+                                        have normal_select l i == Some (read_stores_at h.stores h.base i)
+                                        have normal_select a i == Some (read_stores_at f.stores f.base i)
+                                        have normal_select b i == Some (read_stores_at g.stores g.base i)
+                                        have normalize_ok sig dom ix (Integer (x + y)) st h i
+                                        have list.contains_append (list.keys f.stores) (list.keys g.stores) i
+                                        if list.contains is i
+                                            have sums_read f.stores g.stores f.base g.base is st i x y
+                                        else
+                                            have sums_elsewhere f.stores g.stores f.base g.base is st i x y
+                                            have not (list.contains (list.keys f.stores) i)
+                                            have not (list.contains (list.keys g.stores) i)
+                                            have read_absent f.stores f.base i
+                                            have read_absent g.stores g.base i
+                                            have read_stores_at st (Integer (x + y)) i == Integer (x + y)
+                                            have read_stores_at h.stores h.base i == Integer (x + y)
+                                            have f.base == Integer x and g.base == Integer y
+                                    None   -> have numbered (normalize sig dom ix (Integer (x + y)) st) == None
+                            None    ->
+                                have index_of (Arr ix w) == Some ix
+                                have normal_sum sig dom (Arr ix w) a b == None
+                    _                      -> auto
+            _                -> auto
