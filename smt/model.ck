@@ -129,11 +129,12 @@
 # for partial models from it (`cert.not_refuted`). The `Invalid` theorem
 # is still owed.
 #
-# S6 also owes these, which this module is written to and states only in
-# comments: `before` is a strict total order on values; two normal forms
+# `before` is a strict total order on values (`before_irreflexive`,
+# `before_transitive`, `before_total`). S6 also owes these, which this
+# module is written to and states only in comments: two normal forms
 # are equal exactly when they are the same function (so `normal_arrays`
 # satisfies `arrays_ok`); and the lemma that every sort of a context has a
-# value (`value_of`, from the kept witnesses), which waits for #412.
+# value (`value_of`, from the kept witnesses), which waits for #84.
 #
 # **Every interpretation is a `Model`** (#85). `checks_sound` says "for
 # every `Model` …"; that means "in every interpretation of the context"
@@ -698,8 +699,8 @@ fn unbounded sig dom s -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort,
         Arr _ w     -> unbounded sig dom w
         _           -> False
 
-# Meant as a strict total order on values (by constructor, then by
-# contents); not proved here, S6 owes it.
+# A strict total order on values (by constructor, then by contents):
+# `before_irreflexive`, `before_transitive`, `before_total` below.
 fn before a b -> r : a~Value, b~Value, r~Bool
     match (a, b)
         (Truth x, Truth y)                   -> not x and y
@@ -3527,3 +3528,62 @@ export lemma definitions_ok c : c~Context
     ensures forall n d : n~Nat, d~Def, list.contains (term.defs c) (n, d), term.axiom_ok c (definition_axiom n d)
     proof
         have definition_axiom_ok c n d
+
+# ── `before` is a strict total order ─────────────────────────────────────────
+# What normal forms rest on (#308's reading, owed by S6): `before` never
+# holds of a value and itself, chains, and orders every two different
+# values. `before` itself stays sealed; these are its exported facts.
+
+export lemma before_irreflexive a : a~Value
+    ensures not (before a a)
+    proof
+        match a
+            Sequence xs      -> have all_before_irreflexive xs
+            Constructed _ xs -> have all_before_irreflexive xs
+            _                -> auto
+
+lemma all_before_irreflexive xs : xs~List Value
+    ensures not (all_before xs xs)
+    proof
+        match xs
+            []        -> auto
+            x :: rest ->
+                have before_irreflexive x
+                have all_before_irreflexive rest
+
+export lemma before_transitive a b d : a~Value, b~Value, d~Value, before a b, before b d
+    ensures before a d
+    proof
+        match (a, b, d)
+            (Sequence xs, Sequence ys, Sequence zs)                -> have all_before_transitive xs ys zs
+            (Constructed k xs, Constructed l ys, Constructed j zs) ->
+                if k == l and l == j then have all_before_transitive xs ys zs else auto
+            _                                                      -> auto
+
+lemma all_before_transitive xs ys zs : xs~List Value, ys~List Value, zs~List Value, all_before xs ys, all_before ys zs
+    ensures all_before xs zs
+    proof
+        match (xs, ys, zs)
+            (x :: xr, y :: yr, z :: zr) ->
+                if before x y and before y z
+                    have before_transitive x y z
+                else if x == y and y == z
+                    have all_before_transitive xr yr zr
+                else
+                    auto
+            _                           -> auto
+
+export lemma before_total a b : a~Value, b~Value, a != b
+    ensures before a b or before b a
+    proof
+        match (a, b)
+            (Sequence xs, Sequence ys)           -> have all_before_total xs ys
+            (Constructed _ xs, Constructed _ ys) -> if xs != ys then have all_before_total xs ys else auto
+            _                                    -> auto
+
+lemma all_before_total xs ys : xs~List Value, ys~List Value, xs != ys
+    ensures all_before xs ys or all_before ys xs
+    proof
+        match (xs, ys)
+            (x :: xr, y :: yr) -> if x == y then have all_before_total xr yr else have before_total x y
+            _                  -> auto
