@@ -13,6 +13,7 @@ module reply
 
 import smtlib (Query, Opt, Atom, SExpr, Node, Leaf, Symbol)
 import term
+import model
 import std.string
 import solve (Limits, OutOfWork, Unsupported, Incomplete, Proved, Refuted, GaveUp)
 
@@ -164,3 +165,12 @@ fn line_start src i pos bar comment start extra -> r : src~Bytes, i~Nat, pos~Nat
             line_start src (i + 1) pos bar True start extra
         else
             line_start src (i + 1) pos bar False start extra
+
+# A query's goal is a closed `Bool` term of its context (`smtlib.Query`
+# asks `term.fact_ok`), so `cert.checks`'s condition on the goal always
+# holds of it, and making it changed no answer.
+export lemma query_goal_boolean q : q~Query
+    ensures model.boolean q.context q.goal
+    proof
+        have term.fact_ok_def q.context q.goal
+        have term.check_term_def (term.signature q.context) [] q.goal term.Bool

@@ -3226,6 +3226,9 @@ export lemma check_term_def sig env t want : sig~Sig, env~List Sort, t~Term, wan
 export lemma axiom_ok_def c a : c~Context, a~Axiom
     ensures axiom_ok c a == (check_term (signature c) (binder_env a.vars) a.body Bool == Ok ())
 
+export lemma fact_ok_def c t : c~Context, t~Term
+    ensures fact_ok c t == (check_term (signature c) [] t Bool == Ok ())
+
 export lemma binder_env_def vs : vs~List (Name, Sort)
     ensures binder_env vs == list.reverse (var_sorts vs)
 
