@@ -40,7 +40,7 @@ A lowercase name is a local (a parameter, a `let`, a pattern variable) or a func
 
 A function is applied by writing its arguments after it, separated by spaces: `f x y`. Application associates to the left, so `f x y` is `(f x) y`: every function takes its parameters one at a time, and applying it to fewer than all of them gives a function of the rest. Constructors are applied the same way (`Some x`, `Rect 2 3`).
 
-Application binds tighter than every operator except a glued `.` and `[` ([Lexical structure](lexical.md#glued-and-spaced-and)): `f x + g y` is `(f x) + (g y)`, and `f p.x` is `f (p.x)`. An argument that is itself an application, an operator expression, an `if`, a `match`, a lambda or a `try` needs parentheses, or `$`.
+Application binds tighter than every operator except a glued `.` and `[` ([Lexical structure](lexical.md#glued-and-spaced-and)): `f x + g y` is `(f x) + (g y)`, and `f p.x` is `f (p.x)`. An argument that is itself an application, an operator expression, an `if`, a `match`, a lambda or a `try` needs parentheses, or `$`. A `match`, a multi-line `if`, or a lambda whose body needs a block (a `let`), can't be in parentheses, since no block can start inside brackets ([Layout](lexical.md#layout)): it follows `$`, or is bound first with `let`.
 
 `f -1` passes `-1` to `f`: a `-` glued to what follows, with a space before it, is a sign ([Lexical structure](lexical.md#signs)). `f - 1` and `f-1` subtract.
 

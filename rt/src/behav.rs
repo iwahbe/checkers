@@ -1,6 +1,6 @@
 //! Behaviours of native programs (§13.5): `when`, `fork`, `join`, `par`.
-//! With one thread they run on a FIFO queue after `main` returns (D44,
-//! D67); otherwise on the lock-free pool (D66, D77).
+//! With one thread they run on a FIFO queue after `main` returns (#534,
+//! #566); otherwise on the lock-free pool (#561, #563).
 
 use crate::apply::apply;
 use crate::obj::*;
@@ -14,9 +14,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub enum Beh {
     When(Vec<Arc<Cell>>, W),
     /// A future to fill, the function, and its arguments (`()` for `fork`;
-    /// the arguments and the root capability for `main`, D123).
+    /// the arguments and the root capability for `main`, #610).
     Fork(Arc<Cell>, W, Vec<W>),
-    /// Wakes a behaviour parked in `future.join` (D176): scheduled on the
+    /// Wakes a behaviour parked in `future.join` (#662): scheduled on the
     /// futures it waits for, so it runs once they are filled.
     Wake(Vec<Arc<Cell>>, Option<crate::fiber::Waker>),
 }
@@ -24,7 +24,7 @@ pub enum Beh {
 // Words are shared between threads; ownership is tracked by counts.
 unsafe impl Send for Beh {}
 
-/// A behaviour and, once it has started, the fiber it runs on (D113).
+/// A behaviour and, once it has started, the fiber it runs on (#607).
 pub struct Task {
     beh: Beh,
     fiber: Option<Box<Fiber>>,
@@ -66,7 +66,7 @@ impl Worker<Task> for NativeWorker {
 }
 
 static POOL: OnceLock<Arc<Pool<Task, ()>>> = OnceLock::new();
-/// One thread (D67): the queue. A behaviour that has started and is waiting
+/// One thread (#566): the queue. A behaviour that has started and is waiting
 /// lives on its fiber's stack, so the queue holds behaviours by value; one
 /// that has started carries the cowns it holds.
 enum Entry {
@@ -133,7 +133,7 @@ fn next_resumed(wait: bool) -> Option<Entry> {
     }
 }
 
-/// Run the FIFO queue until it is empty and nothing waits (D44). A behaviour
+/// Run the FIFO queue until it is empty and nothing waits (#534). A behaviour
 /// that waits parks, keeping its cowns: a later behaviour on any of them is
 /// held back until it finishes, and so is every later one on those (causal
 /// order, §8.5). A behaviour that can go on goes to the back of the queue
@@ -307,7 +307,7 @@ fn run_in_place(b: &mut Beh) {
 
 /// A future's value for a `join`: a new reference, the future keeping its
 /// own, so a future joined twice gives both joins its value. (One holding a
-/// resource is joined exactly once, D156 l; the reference the future keeps
+/// resource is joined exactly once, #643 l; the reference the future keeps
 /// is dropped with it.)
 fn take_future(x: &Cell) -> W {
     let v = *x.v.lock().unwrap();
@@ -326,7 +326,7 @@ fn store_when(cells: &[Arc<Cell>], r: W) {
             bug("`when` body must return a tuple");
         }
         // The last cown's value is the rest of the tuple: `(a, (b, c))` is
-        // stored flat (D174).
+        // stored flat (#673).
         let n = cells.len();
         for (i, c) in cells.iter().enumerate() {
             *c.v.lock().unwrap() = if i + 1 == n { ck_tuple_rest_owned(r, i) } else { dup(slot(r, i)) };
@@ -367,7 +367,7 @@ pub extern "C" fn ck_when(cowns: W, f: W, owner: u64, check: u64) -> W {
     UNIT
 }
 
-/// `main` as the program's first behaviour (D123): its waits park it like
+/// `main` as the program's first behaviour (#610): its waits park it like
 /// any behaviour's. The future it fills holds its result.
 pub fn start_main(main: W, args: Vec<W>) -> W {
     let fut = new_cell(UNSET);
@@ -375,14 +375,14 @@ pub fn start_main(main: W, args: Vec<W>) -> W {
     new_obj(Obj::Future(fut))
 }
 
-/// `future.fork sched f` (D171): a behaviour running `f ()`.
+/// `future.fork sched f` (#658): a behaviour running `f ()`.
 pub(crate) fn ck_fork(f: W) -> W {
     let fut = new_cell(UNSET);
     schedule(Beh::Fork(fut.clone(), dup(f), vec![UNIT]));
     new_obj(Obj::Future(fut))
 }
 
-/// `future.join x` (D176): the values of a future or a flat tuple of
+/// `future.join x` (#662): the values of a future or a flat tuple of
 /// futures, parking the behaviour until they are all filled. A future joined
 /// twice gives both joins its value (`take_future`). Borrows `x`.
 pub(crate) fn join_values(x: W) -> W {
@@ -392,7 +392,7 @@ pub(crate) fn join_values(x: W) -> W {
         if crate::fiber::on_fiber() {
             crate::fiber::park(Box::new(move |wake| schedule(Beh::Wake(cs, Some(wake)))));
         } else {
-            // A component of `par` on a thread of its own (D69): no fiber to
+            // A component of `par` on a thread of its own (#562): no fiber to
             // park, so the thread waits until a behaviour scheduled on the
             // futures runs, which is once they are all filled. Behaviours run
             // on the pool's workers, never on this thread, so this ends.
@@ -416,7 +416,7 @@ pub(crate) fn join_values(x: W) -> W {
     }
     let vals: Vec<W> = cells.iter().map(|c| take_future(c)).collect();
     if is_kind(x, K_TUPLE) {
-        // The values' tuple, flat: the last may be a tuple itself (D174).
+        // The values' tuple, flat: the last may be a tuple itself (#673).
         crate::ops::ck_tuple_flat(new_tuple(&vals))
     } else {
         vals[0]
@@ -426,12 +426,12 @@ pub(crate) fn join_values(x: W) -> W {
 struct Send2(W);
 unsafe impl Send for Send2 {}
 
-/// `par (e1, …, en)` (D69): `thunks` are closures taking `()`; they are
+/// `par (e1, …, en)` (#562): `thunks` are closures taking `()`; they are
 /// consumed. Components run on threads while the pool has room. The result
-/// is flat: the last component may be a tuple itself (D174).
+/// is flat: the last component may be a tuple itself (#673).
 #[no_mangle]
 /// # Safety
-/// Called by native code with valid pointers (D72).
+/// Called by native code with valid pointers (#569).
 pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
     let ts: Vec<W> = unsafe { std::slice::from_raw_parts(thunks, n as usize) }.to_vec();
     let spawned = pool().map_or(0, |p| p.take_par(ts.len().saturating_sub(1)));
@@ -492,7 +492,7 @@ pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
     crate::ops::ck_tuple_flat(new_tuple(&out))
 }
 
-/// Component `i` and the rest after it, owned (D174).
+/// Component `i` and the rest after it, owned (#673).
 fn ck_tuple_rest_owned(t: W, i: usize) -> W {
     crate::ops::ck_tuple_rest(t, i as W)
 }

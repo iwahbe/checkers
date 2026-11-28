@@ -1,4 +1,4 @@
-# A `let main` whose function has the wrong types (E0366, D181).
+# A `let main` whose function has the wrong types (E0366, #668).
 module main_let_wrong
 
 import std.system (System, ExitCode)

@@ -10,7 +10,7 @@ pub fn parse(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>) {
     (m, diags)
 }
 
-/// `parse`, and the kind of place the cursor token (D142) is in, if any.
+/// `parse`, and the kind of place the cursor token (#626) is in, if any.
 pub fn parse_with_place(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>, Option<Place>) {
     let mut p = Parser {
         toks: tokens,
@@ -25,12 +25,13 @@ pub fn parse_with_place(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>, Option<
         in_type: 0,
         keyword_params: Vec::new(),
         templates: false,
+        brackets: 0,
     };
     let m = p.module();
     (m, p.diags, p.place)
 }
 
-/// The kind of place the cursor is in (D142 c): what can be written there.
+/// The kind of place the cursor is in (#626 c): what can be written there.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaceKind {
     /// The start of a declaration; `first`: none before it (so `import` too).
@@ -88,7 +89,7 @@ struct Parser {
     indent: usize,
     /// Parsing a match guard: `->` ends the guard instead of forming a function type.
     no_arrow: bool,
-    /// Where the cursor token is (D142), once the parser has met it.
+    /// Where the cursor token is (#626), once the parser has met it.
     place: Option<Place>,
     /// Inside `proof` blocks.
     in_proof: usize,
@@ -101,6 +102,9 @@ struct Parser {
     keyword_params: Vec<String>,
     /// A template was parsed (#132).
     templates: bool,
+    /// How many brackets the parser is inside: lines continue there
+    /// (§9.1), so no block can start.
+    brackets: usize,
 }
 
 impl Parser {
@@ -152,7 +156,7 @@ impl Parser {
         self.peek() == t
     }
 
-    /// At the cursor token (D142): note the kind of place, the first time.
+    /// At the cursor token (#626): note the kind of place, the first time.
     /// Parsing then goes on as for a name.
     fn mark(&mut self, kind: PlaceKind) {
         if self.place.is_none() && matches!(self.peek(), Tok::LName(n) if n == super::lexer::CURSOR) {
@@ -368,7 +372,7 @@ impl Parser {
 
     fn import(&mut self) -> PResult<Import> {
         let start = self.bump().span; // import
-        // The path, noting the parts before the cursor (D142).
+        // The path, noting the parts before the cursor (#626).
         self.mark(PlaceKind::Import(Vec::new()));
         let first = self.ident("a module name")?;
         let mut span = first.span;
@@ -574,7 +578,7 @@ impl Parser {
             let body = Block { stmts: Vec::new(), result, span };
             return Ok(DeclKind::Fn { partial, name, params, result: result_name, constraints, decreasing: None, body });
         }
-        // A body that fails to parse keeps the header (D122): uses of the
+        // A body that fails to parse keeps the header (#599): uses of the
         // function still see its signature.
         let start = self.span();
         self.body_start = true;
@@ -944,7 +948,7 @@ impl Parser {
 
     /// The rest of a block, after its INDENT. A statement that fails to
     /// parse becomes a hole (`ExprKind::Error`, bound if it was a `let`) and
-    /// parsing goes on at the block's next statement (D142 e): the rest of
+    /// parsing goes on at the block's next statement (#626 e): the rest of
     /// the body is still checked.
     fn block_rest(&mut self) -> PResult<Block> {
         let start = self.span();
@@ -958,7 +962,7 @@ impl Parser {
                 Err(Failed) => {
                     let at = self.span();
                     let hole = Span { start: at.start, end: at.start };
-                    // The cursor (D142) was in the statement that failed: the
+                    // The cursor (#626) was in the statement that failed: the
                     // hole is the cursor's name, so the checker still sees
                     // what is in scope there.
                     let mut cursor = (!had_place && self.place.is_some())
@@ -1047,7 +1051,7 @@ impl Parser {
                 let hspan = self.bump().span;
                 self.mark(PlaceKind::Have);
                 if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
-                    // `have x~T` (D170).
+                    // `have x~T` (#660).
                     let name = self.ident("a name")?;
                     self.bump(); // ~
                     self.mark(PlaceKind::Type { start: true, field: false });
@@ -1062,7 +1066,7 @@ impl Parser {
                 let e = self.expr()?;
                 self.end_line()?;
                 stmts.push(Stmt::Have(e));
-                // A proof block may end with `have`: the goal is then closed by an implicit `auto` (D13).
+                // A proof block may end with `have`: the goal is then closed by an implicit `auto` (#507).
                 if self.at(&Tok::Dedent) {
                     self.bump();
                     let span = start.to(self.prev_span());
@@ -1073,7 +1077,7 @@ impl Parser {
             let e = self.expr()?;
             self.end_line()?;
             if !self.at(&Tok::Dedent) {
-                // A `Unit` statement (D35); the type checker rejects other types.
+                // A `Unit` statement (#527); the type checker rejects other types.
                 stmts.push(Stmt::Expr(e));
                 return Ok(None);
             }
@@ -1083,7 +1087,7 @@ impl Parser {
         }
     }
 
-    /// `when x = c, … using sched` NL INDENT block DEDENT (D30)
+    /// `when x = c, … using sched` NL INDENT block DEDENT (#529)
     fn when_expr(&mut self) -> PResult<When> {
         let start = self.bump().span; // when
         let mut binds = Vec::new();
@@ -1121,10 +1125,43 @@ impl Parser {
         Ok(Expr { kind: ExprKind::Block(b), span })
     }
 
+    /// Parse with `f` inside one more bracket.
+    fn bracketed<T>(&mut self, f: impl FnOnce(&mut Self) -> PResult<T>) -> PResult<T> {
+        self.brackets += 1;
+        let r = f(self);
+        self.brackets -= 1;
+        r
+    }
+
+    /// A block form (`what`, at `span`) inside brackets: lines continue
+    /// there (§9.1), so its block can't start. E0125.
+    fn block_in_brackets(&mut self, what: &str, span: Span, help: &str) -> Failed {
+        self.diags.push(
+            Diagnostic::error("E0125", format!("{what} can't be inside brackets"), span)
+                .with_label("inside brackets lines continue, so no block can start here")
+                .with_help(help),
+        );
+        Failed
+    }
+
     // ── expressions ─────────────────────────────────────────────────────────
 
     pub fn expr(&mut self) -> PResult<Expr> {
         let start = self.span();
+        if self.brackets > 0 {
+            let help = match self.peek() {
+                Tok::Kw(Kw::Match) => Some(("a `match`", "bind it on a line before this one, `let x = match …`, and use `x` here")),
+                Tok::Kw(Kw::When) => Some(("a `when`", "write the `when` on a line of its own")),
+                Tok::Kw(Kw::Let) => Some((
+                    "a `let`",
+                    "bind what needs it on a line before this one: a lambda as `let f = \\x ->` and its block, then use `f` here",
+                )),
+                _ => None,
+            };
+            if let Some((what, help)) = help {
+                return Err(self.block_in_brackets(what, start, help));
+            }
+        }
         match self.peek() {
             Tok::Kw(Kw::When) => {
                 let w = self.when_expr()?;
@@ -1176,7 +1213,7 @@ impl Parser {
         }
     }
 
-    /// `forall x y : c, …` (D137): its clauses are those that follow and
+    /// `forall x y : c, …` (#632): its clauses are those that follow and
     /// mention one of its variables (parenthesize to end it sooner).
     fn forall(&mut self) -> PResult<Expr> {
         let start = self.bump().span; // forall
@@ -1249,6 +1286,13 @@ impl Parser {
             let e = self.expr()?;
             let span = start.to(e.span);
             return Ok(Expr { kind: ExprKind::If(Box::new(cond), Box::new(t), Box::new(e)), span });
+        }
+        if self.brackets > 0 {
+            return Err(self.block_in_brackets(
+                "a multi-line `if`",
+                start,
+                "write `if … then … else …`, or bind it on a line before this one, `let x = if …`, and use `x` here",
+            ));
         }
         let t = self.block_expr("`if` branch (or write `then` on the same line)")?;
         self.mark(PlaceKind::Else);
@@ -1402,7 +1446,7 @@ impl Parser {
     }
 
     fn postfix(&mut self) -> PResult<Expr> {
-        // A sign glued to an argument negates it: `f -x` is `f (-x)` (D169).
+        // A sign glued to an argument negates it: `f -x` is `f (-x)` (#657).
         if self.at(&Tok::Neg) {
             let start = self.bump().span;
             let e = self.postfix()?;
@@ -1428,7 +1472,7 @@ impl Parser {
                 e = Expr { kind: ExprKind::Template(Box::new(e), pieces), span };
             } else if glued && self.at(&Tok::LBracket) {
                 self.bump();
-                let i = self.expr()?;
+                let i = self.bracketed(Self::expr)?;
                 let end = self.expect(Tok::RBracket, "`]`")?.span;
                 let span = e.span.to(end);
                 e = Expr { kind: ExprKind::Index(Box::new(e), Box::new(i)), span };
@@ -1502,6 +1546,8 @@ impl Parser {
             in_type: 0,
             keyword_params: Vec::new(),
             templates: false,
+            // A hole is inside its `{…}`.
+            brackets: 1,
         };
         let r = f(&mut p).ok().filter(|_| {
             if p.pos == last {
@@ -1573,12 +1619,12 @@ impl Parser {
                     }
                 };
             }
-            Tok::LParen => return self.paren(),
+            Tok::LParen => return self.bracketed(Self::paren),
             Tok::LBracket => {
                 self.bump();
                 let mut items = Vec::new();
                 if !self.at(&Tok::RBracket) {
-                    self.commas(&mut items, Self::expr)?;
+                    self.bracketed(|p| p.commas(&mut items, Self::expr))?;
                 }
                 let end = self.expect(Tok::RBracket, "`,` or `]`")?.span;
                 return Ok(Expr { kind: ExprKind::List(items), span: start.to(end) });
@@ -1590,7 +1636,7 @@ impl Parser {
 
     fn paren(&mut self) -> PResult<Expr> {
         let start = self.bump().span; // (
-        // `(x~T, …)` or `(x~A -> …)`: a refinement written in a type (D82).
+        // `(x~T, …)` or `(x~A -> …)`: a refinement written in a type (#576).
         if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
             let param = self.ident("a name")?;
             self.bump(); // ~
@@ -1601,7 +1647,7 @@ impl Parser {
             self.no_arrow = saved;
             let dom = dom?;
             let arrow = if self.eat(&Tok::Arrow) { Some(self.refine_result()?) } else { None };
-            // Only a function's parameter may be `own` (D172 b).
+            // Only a function's parameter may be `own` (#672 b).
             if mult != Mult::Many && !(mult == Mult::Own && arrow.is_some()) {
                 self.refine_mult_error(mult, mult_span, arrow.is_some());
             }
@@ -1680,7 +1726,7 @@ impl Parser {
 
     /// E0123: `ghost`, `own` or `comptime` where a type can't carry it: on
     /// a refinement, a function type's result, or (`ghost`, `comptime`) its
-    /// parameter. They were ignored before (D172 b).
+    /// parameter. They were ignored before (#672 b).
     fn refine_mult_error(&mut self, mult: Mult, span: Span, is_param: bool) {
         let word = match mult {
             Mult::Ghost => "ghost",

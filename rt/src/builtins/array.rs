@@ -1,4 +1,4 @@
-//! Builtins of arrays (`std.array`, D133). Each gets its element type's
+//! Builtins of arrays (`std.array`, #624). Each gets its element type's
 //! layout first (a type argument's word, `array::Layout::of_word`).
 
 #[allow(unused_imports)]

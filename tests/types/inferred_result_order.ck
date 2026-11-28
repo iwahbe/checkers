@@ -1,7 +1,7 @@
 module inferred_result_order
 
 # A function whose result type isn't written is checked before the
-# functions that use it (D65), so its result type is known at each call,
+# functions that use it (#557), so its result type is known at each call,
 # whatever the arguments.
 
 fn uses_later prev pending -> r : prev~Option Nat, pending~Bool, r~Bool

@@ -1,4 +1,4 @@
-# An array too large to allocate is the runtime's `out of memory` (D184, #25):
+# An array too large to allocate is the runtime's `out of memory` (#667, #25):
 # 2^61 elements, where a Rust `Vec` panicked with `capacity overflow`.
 module too_large_repeat
 

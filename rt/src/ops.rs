@@ -24,7 +24,7 @@ pub extern "C" fn ck_sub(a: W, b: W) -> W {
     of_num(x.sub(&y))
 }
 
-/// `-` on `Nat`: checked (D41).
+/// `-` on `Nat`: checked (#536).
 #[no_mangle]
 pub extern "C" fn ck_natsub(a: W, b: W, owner: u64) -> W {
     let (x, y) = num2(a, b);
@@ -222,7 +222,7 @@ fn equal_step(a: W, b: W) -> Result<Step, &'static str> {
         return Err("functions");
     }
     // Arrays of one type may be stored differently (an `Array U8` used as
-    // an `Array U32`, D133): compared element by element.
+    // an `Array U32`, #624): compared element by element.
     if crate::array::is_array(a) && crate::array::is_array(b) && (ka == crate::array::K_ARRAY || kb == crate::array::K_ARRAY) {
         return Ok(crate::array::equal_flat(a, b).map_or(Step::Elems, Step::Equal));
     }
@@ -360,7 +360,7 @@ pub extern "C" fn ck_index(a: W, b: W, owner: u64) -> W {
 /// A number literal that doesn't fit in a word, from its decimal digits.
 #[no_mangle]
 /// # Safety
-/// Called by native code with valid pointers (D72).
+/// Called by native code with valid pointers (#569).
 pub unsafe extern "C" fn ck_big_lit(p: *const u8, len: u64) -> W {
     let s = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(p, len as usize)) };
     let b: num_bigint::BigInt = s.parse().unwrap_or_default();
@@ -822,7 +822,7 @@ pub fn show_bytes(b: &[u8]) -> String {
     s
 }
 
-// ── tuples (D174) ────────────────────────────────────────────────────────────
+// ── tuples (#673) ────────────────────────────────────────────────────────────
 
 /// A tuple just built whose last component is a tuple: one flat tuple, as
 /// `(a, (b, c))` is `(a, b, c)`. Consumes `t`.
@@ -841,7 +841,7 @@ pub extern "C" fn ck_tuple_flat(t: W) -> W {
 }
 
 /// Component `i` of a tuple and everything after it: the component, if it is
-/// the last, else a tuple of the rest (a pattern's last component, D174).
+/// the last, else a tuple of the rest (a pattern's last component, #673).
 /// Borrows `t`; the result is owned.
 #[no_mangle]
 pub extern "C" fn ck_tuple_rest(t: W, i: W) -> W {

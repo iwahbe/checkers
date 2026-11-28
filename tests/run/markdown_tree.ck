@@ -1,5 +1,5 @@
 # markdown_tree.ck — std.markdown's syntax tree for a small document: each
-# block's and inline's span, shown as the source text it covers (D151 a).
+# block's and inline's span, shown as the source text it covers (#640 a).
 
 module tree
 

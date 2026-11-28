@@ -1,0 +1,16 @@
+-- stdout
+b"ab" < b"abc"
+b"b" > b"ab"
+b"" < b"ab"
+b"ab" > b""
+b"\xc3\xa9" > b"z"
+[b"", b"", b"ab", b"ab", b"ab", b"ab", b"abc", b"b", b"z", b"\xc3\xa9"]
+[b"", b"", b"ab", b"ab", b"ab", b"ab", b"abc", b"b", b"z", b"\xc3\xa9"]
+<
+>
+==
+<
+[[], [-2, 5, 0], [3], [3, 1]]
+>
+-- stderr
+-- exit 0

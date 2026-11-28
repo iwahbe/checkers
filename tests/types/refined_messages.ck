@@ -2,7 +2,7 @@ module refined_messages
 
 # A type mismatch names a refined type as it was written (`Small`), not its
 # base type (`Nat`), on both sides, even where the checker compares against
-# the base type and proves the refinement separately (D71).
+# the base type and proves the refinement separately (#554).
 
 type Small = n~Nat, n < 10
 

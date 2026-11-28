@@ -1,4 +1,4 @@
-# An array too large to allocate (D184, #25): the byte size of 2^62 `U32`s
+# An array too large to allocate (#667, #25): the byte size of 2^62 `U32`s
 # wraps around a machine word to 0.
 module too_large_wraps
 

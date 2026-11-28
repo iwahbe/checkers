@@ -1,4 +1,4 @@
-# Past a syntax error (D122): the syntax error after the types phase, then
+# Past a syntax error (#599): the syntax error after the types phase, then
 # the proof failure of another declaration with it after the proofs phase.
 > {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-8"]}}}}
 < 1

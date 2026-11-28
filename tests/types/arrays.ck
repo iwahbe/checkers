@@ -1,4 +1,4 @@
-# Arrays (D133): indexing gives the element type, with its refinement;
+# Arrays (#624): indexing gives the element type, with its refinement;
 # `==` compares element by element; `Bytes` is `Array U8`.
 module arrays
 

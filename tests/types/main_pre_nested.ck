@@ -1,4 +1,4 @@
-# An alias of a refinement is a refinement (E0366, D181).
+# An alias of a refinement is a refinement (E0366, #668).
 module main_pre_nested
 
 import std.system (System, ExitCode)

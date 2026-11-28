@@ -1,0 +1,3 @@
+;; work 233
+unsat
+(error "line 18 column 35: model is not available")

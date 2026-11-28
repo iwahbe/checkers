@@ -1,6 +1,6 @@
 module polarity
 
-# D16: abstract types mark their parameters' polarity; the module checks it.
+# #511: abstract types mark their parameters' polarity; the module checks it.
 
 # Fine: `v` is a field, so strictly positive.
 export abstract record Box +v : v~Type

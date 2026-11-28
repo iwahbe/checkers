@@ -1,4 +1,4 @@
-# A lemma may conclude a `forall` (D146).
+# A lemma may conclude a `forall` (#635).
 module forall_ensures
 
 import std.list (sorted_by, sort_by, perm, length)

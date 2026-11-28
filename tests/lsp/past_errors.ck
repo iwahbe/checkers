@@ -1,6 +1,6 @@
 module past_errors
 
-# A syntax error and a proof failure, shown together (D122).
+# A syntax error and a proof failure, shown together (#599).
 fn broken x -> r : x~Nat, r~Nat
     x + + 1
 

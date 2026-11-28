@@ -1,4 +1,4 @@
-# `array.init n f` calls `f` only with `i < n` (D186, #32), so the
+# `array.init n f` calls `f` only with `i < n` (#663, #32), so the
 # callback may index arrays of length `n` without checking.
 module array_init
 
@@ -12,7 +12,7 @@ fn copy xs -> ys : xs~Array Nat, ys~Array Nat, len ys == len xs
 fn sums xs -> ys : xs~Array Nat, len xs > 0, ys~Array Nat, len ys == len xs - 1
     array.init (len xs - 1) (\i -> xs[i] + xs[i + 1])
 
-# A function whose precondition the bound implies (D85).
+# A function whose precondition the bound implies (#579).
 fn at xs i -> x : xs~Array Nat, i~Nat, i < len xs, x~Nat
     xs[i]
 

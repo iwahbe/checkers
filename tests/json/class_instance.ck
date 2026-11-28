@@ -1,6 +1,6 @@
 module class_instance
 
-# An instance of a class from another module (D136): its lemma's
+# An instance of a class from another module (#615): its lemma's
 # diagnostic is at the instance, and the class's code shown there
 # isn't indexed as if it were in this file.
 record Odd

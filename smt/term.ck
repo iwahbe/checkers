@@ -2319,7 +2319,8 @@ lemma bound_heads sig env bs ss : sig~Sig, env~List Sort, bs~List (Name, Term), 
                         have bound_heads sig env rest more
                     _               -> auto
 
-# A variable's sort is found only for an index below the environment's length.
+# A variable's sort is found only for an index below the environment's length
+# (a list fact `std.list` doesn't state, #679).
 lemma drop_head i xs : i~Nat, xs~List a, list.head (list.drop i xs) != None
     ensures i < list.length xs
     proof
@@ -2399,7 +2400,7 @@ lemma binder_env_length vs : vs~List (Name, Sort)
         have var_sorts_length vs
         have list.length_reverse (var_sorts vs)
 
-lemma var_sorts_length vs : vs~List (Name, Sort)
+export lemma var_sorts_length vs : vs~List (Name, Sort)
     ensures list.length (var_sorts vs) == list.length vs
     proof
         match vs
@@ -3314,3 +3315,49 @@ lemma bound_sorts_ok c env bs ss : c~Context, env~List Sort, bs~List (Name, Term
                         have sort_of_ok c env t s
                         have bound_sorts_ok c env rest more
                     _               -> auto
+
+# ── What `check_term`, `axiom_ok` and `def_ok` give ──────────────────────────
+# Sealed outside this module, so stated here as equations, as `sort_of`'s
+# cases are above.
+
+export lemma check_term_def sig env t want : sig~Sig, env~List Sort, t~Term, want~Sort
+    ensures check_term sig env t want
+        == match sort_of sig env t
+            Ok s  -> if s == want then Ok () else Err (Expected want s)
+            Err e -> Err e
+
+export lemma axiom_ok_def c a : c~Context, a~Axiom
+    ensures axiom_ok c a == (check_term (signature c) (binder_env a.vars) a.body Bool == Ok ())
+
+export lemma fact_ok_def c t : c~Context, t~Term
+    ensures fact_ok c t == (check_term (signature c) [] t Bool == Ok ())
+
+export lemma binder_env_def vs : vs~List (Name, Sort)
+    ensures binder_env vs == list.reverse (var_sorts vs)
+
+# A definition of `c` is its function of the signature, with its body of
+# its result sort where its parameters are bound.
+export lemma def_ok_def c n d : c~Context, n~Nat, d~Def
+    ensures def_ok c n d
+        == (n < len (signature c).funs and (signature c).funs[n] == def_fun d
+            and check_term (signature c) (binder_env d.params) d.body d.result == Ok ())
+
+# The function a definition declares takes its parameters' sorts.
+export lemma def_fun_params d : d~Def
+    ensures (def_fun d).params == var_sorts d.params and (def_fun d).result == d.result
+    proof
+        have param_sorts d.params
+
+lemma defs_ok_in_contains c ds n d : c~Context, ds~List (Nat, Def), n~Nat, d~Def, defs_ok_in c ds, list.contains ds (n, d)
+    ensures def_ok c n d
+    proof
+        match ds
+            []        -> auto
+            _ :: rest -> if list.head ds == Some (n, d) then auto else have defs_ok_in_contains c rest n d
+
+# Every definition of a context is one in that sense.
+export lemma def_of_context c n d : c~Context, n~Nat, d~Def, list.contains (defs c) (n, d)
+    ensures def_ok c n d
+    proof
+        have defs_well_sorted c
+        have defs_ok_in_contains c (defs c) n d

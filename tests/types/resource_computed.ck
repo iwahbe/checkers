@@ -1,4 +1,4 @@
-# A field whose type is computed from the record's parameters (D112): the
+# A field whose type is computed from the record's parameters (#611): the
 # record holds a resource for some arguments and not others. Where the
 # arguments are known the field types are computed; where they aren't, the
 # value counts as a resource, since it may hold one.

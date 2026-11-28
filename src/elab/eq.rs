@@ -1,5 +1,5 @@
 //! `==` never compares functions, nor capabilities, cowns, futures, files
-//! or process handles (D125).
+//! or process handles (#614).
 //!
 //! (a) `==`/`!=` in compiled code (function bodies, `check`s) on a type that
 //! is or contains a function type is E0263. A type parameter of the
@@ -12,7 +12,6 @@
 //! requirement) and every argument is checked: E0264.
 
 use super::*;
-use std::collections::BTreeSet;
 
 /// Why a type can't be compared.
 enum Bad {
@@ -21,13 +20,47 @@ enum Bad {
     NoEq(Val),
     /// It is a type variable that is not a parameter of the function.
     Var(usize),
+    /// It holds this type, which holds types without end, computed from
+    /// its arguments: whether one is a function can't be known.
+    Unsure(Val),
+}
+
+/// The walk for `==`: a value is compared part by part, field by field and
+/// element by element.
+struct Comparable;
+
+impl reach::Holds for Comparable {
+    fn look(&self, e: &Elab, t: &Val) -> reach::Look {
+        use reach::Look;
+        match t {
+            Val::Pi(..) => Look::Hit,
+            // An array compares element by element (#624).
+            Val::TyCon(id, args) if Some(*id) == e.g.well_known.array => match args.first() {
+                Some(a) => Look::Parts(vec![a.clone()]),
+                None => Look::Leaf,
+            },
+            Val::TyCon(id, _) if e.no_equality(*id).is_some() => Look::Hit,
+            Val::TupleTy(ts) => Look::Parts(ts.to_vec()),
+            Val::TyCon(id, args) => Look::Fields(*id, args.to_vec()),
+            Val::Neutral(Head::Var(l), sp) if sp.is_empty() => Look::Var(*l),
+            _ => Look::Leaf,
+        }
+    }
+
+    fn field(&self, _: &Elab, _: ConId, _: usize) -> bool {
+        true
+    }
+
+    fn by_head(&self) -> bool {
+        true
+    }
 }
 
 impl Elab {
     /// The positions of `d`'s leading binders that are type parameters.
     fn type_params(&self, d: DefId) -> Vec<(usize, Name)> {
         let mut out = Vec::new();
-        let mut v = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
+        let mut v = eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty);
         let mut k = 0;
         while let Val::Pi(x, _, _, dom, c) = self.force(&v) {
             if matches!(self.force(&dom), Val::Univ(_)) {
@@ -39,7 +72,7 @@ impl Elab {
         out
     }
 
-    /// What a built-in type without equality is (D125 c): `None` for the
+    /// What a built-in type without equality is (#614 c): `None` for the
     /// built-in types that compare and for every declared type.
     fn no_equality(&self, id: TyId) -> Option<&'static str> {
         let ti = &self.g.tys[id.0 as usize];
@@ -72,51 +105,20 @@ impl Elab {
         }
     }
 
-    /// The type variables `ty` mentions where a value is compared, or why
-    /// it can't be compared.
-    fn comparable(&self, ty: &Val, depth: usize, seen: &mut Vec<(TyId, Vec<Tm>)>, lvl: usize, vars: &mut BTreeSet<usize>) -> Result<(), Val> {
-        if depth > 32 {
-            return Ok(());
-        }
-        match self.force(ty) {
-            f @ Val::Pi(..) => Err(f),
-            // An array compares element by element (D133).
-            Val::TyCon(id, args) if Some(id) == self.g.well_known.array => match args.first() {
-                Some(a) => self.comparable(a, depth + 1, seen, lvl, vars),
-                None => Ok(()),
-            },
-            t @ Val::TyCon(id, _) if self.no_equality(id).is_some() => Err(t),
-            Val::TupleTy(ts) => ts.iter().try_for_each(|t| self.comparable(t, depth + 1, seen, lvl, vars)),
-            Val::TyCon(id, args) => {
-                let key: Vec<Tm> = args.iter().map(|a| quote(&self.g, lvl, a)).collect();
-                if seen.iter().any(|(i, k)| *i == id && k.len() == key.len() && k.iter().zip(&key).all(|(a, b)| tm_eq(a, b))) {
-                    return Ok(());
-                }
-                seen.push((id, key));
-                for c in self.g.tys[id.0 as usize].ctors.clone() {
-                    let fields = self.g.cons[c.0 as usize].fields.clone();
-                    for (i, f) in fields.iter().enumerate() {
-                        let mut env = args.to_vec();
-                        env.extend(std::iter::repeat_n(Val::Error, i));
-                        let fty = eval(&self.g, &Rc::new(env), &f.3);
-                        self.comparable(&fty, depth + 1, seen, lvl, vars)?;
-                    }
-                }
-                Ok(())
-            }
-            Val::Neutral(Head::Var(l), sp) if sp.is_empty() => {
-                vars.insert(l);
-                Ok(())
-            }
-            _ => Ok(()),
-        }
+    /// Why a type holding `t` (`Bad::Unsure`) can't be compared.
+    fn unsure_why(&self, names: &[Name], lvl: usize, t: &Val) -> String {
+        let shown = crate::core::show_marked(&self.g, names, &quote(&self.g, lvl, t));
+        format!("it holds `{shown}`, whose parts' types are computed from its arguments at every depth, so whether one is a function can't be known")
     }
 
     /// Check `ty` (at level `lvl`, in a body of `owner`): the type
     /// parameters of `owner` it needs comparable, or why it can't be.
     fn check_comparable(&self, ty: &Val, lvl: usize, owner: Option<DefId>) -> Result<Vec<(usize, Name)>, Bad> {
-        let mut vars = BTreeSet::new();
-        self.comparable(ty, 0, &mut Vec::new(), lvl, &mut vars).map_err(Bad::NoEq)?;
+        let vars = match self.reach(&Comparable, lvl, ty) {
+            (reach::Found::Nothing, vars) => vars,
+            (reach::Found::Hit(t), _) => return Err(Bad::NoEq(t)),
+            (reach::Found::Unsure(t), _) => return Err(Bad::Unsure(t)),
+        };
         let params = owner.map(|d| self.type_params(d)).unwrap_or_default();
         let mut out = Vec::new();
         for l in vars {
@@ -148,6 +150,11 @@ impl Elab {
                     diag = diag.with_help("compare what the functions return instead, such as `f x == g x`");
                 }
                 self.err(diag);
+            }
+            Err(Bad::Unsure(t)) => {
+                let shown = crate::core::show_marked(&self.g, &d.names.to_vec(), &quote(&self.g, d.lvl, &d.ty));
+                let why = self.unsure_why(&d.names.to_vec(), d.lvl, &t);
+                self.err(Diagnostic::error("E0263", format!("{} can't compare `{shown}`: {why}", d.what), d.span).with_label(format!("has type `{shown}`")));
             }
             Err(Bad::Var(l)) => {
                 let shown = d.names.get(l).map(|n| n.to_string()).unwrap_or_else(|| "_".into());
@@ -202,12 +209,17 @@ impl Elab {
                     Ok(_) => continue,
                     Err(Bad::NoEq(f)) => self.why_not(&i.names.to_vec(), i.lvl, arg, &f),
                     Err(Bad::Var(_)) => "it could be a function type".to_string(),
+                    Err(Bad::Unsure(t)) => self.unsure_why(&i.names.to_vec(), i.lvl, &t),
                 };
                 let callee = self.g.defs[i.callee.0 as usize].name.to_string();
                 let param = self.type_params(i.callee).into_iter().find(|(p, _)| *p == k).map(|(_, n)| n.to_string()).unwrap_or_default();
                 let root = self.g.defs[why.root.0 as usize].name.to_string();
+                let root_home = &self.g.defs[why.root.0 as usize].module;
                 let through = if why.root == i.callee {
                     String::new()
+                } else if self.hidden_from(&self.cur, crate::core::Marked::Def(why.root)) {
+                    // Another package's private function isn't named (§6 rule 9).
+                    format!(" (through a private function of `{root_home}`)")
                 } else if why.param.as_ref() == param.as_str() {
                     format!(" (through `{root}`)")
                 } else {

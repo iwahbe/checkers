@@ -1,7 +1,7 @@
 module positivity_computed
 
 # Strict positivity looks inside a type computed by an `if` or a `match`
-# (D178): the field may have the type of any arm.
+# (#665): the field may have the type of any arm.
 
 # Left of an `->` in one arm.
 enum Bad
@@ -28,7 +28,7 @@ enum Good
     Leaf
     Node b kids : b~Bool, kids~(if b then List Good else Nat)
 
-# Marks (D16) are checked the same way.
+# Marks (#511) are checked the same way.
 export abstract record Plus +v : v~Type
     b~Bool
     f~(if b then (v -> Nat) else Nat)                       # error E0359

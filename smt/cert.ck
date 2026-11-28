@@ -240,11 +240,13 @@ export transparent fn run c goal db steps -> r : c~Context, goal~Term, db~List (
                 None    -> None
 
 # Whether `refutation` refutes the facts of `c` and the goal taken as false:
-# every step is right, and the last adds the empty clause.
+# the goal is a closed `Bool` term of `c`, every step is right, and the
+# last adds the empty clause.
 export transparent fn checks c goal refutation -> r : c~Context, goal~Term, refutation~Refutation, r~Bool
-    match run c goal [] refutation.steps
-        Some (last :: _) -> last == []
-        _                -> False
+    model.boolean c goal
+        and match run c goal [] refutation.steps
+            Some (last :: _) -> last == []
+            _                -> False
 
 # ── Truth of literals and clauses ────────────────────────────────────────────
 
@@ -597,9 +599,9 @@ export transparent fn values_among c m ts vs -> r : c~Context, m~Model, ts~List 
 # restricted to the finitely many values these terms need, is a `Model`
 # meeting every premise. In Checkers, `cert_checks` builds one such model
 # for an accepted refutation, and `axiom_premises_ok` shows that no axiom of
-# `c` makes `axioms` unsatisfiable at no values. The same for definitions'
-# equations (`model.definition_axiom`) waits for `term.sort_of`'s
-# inversion lemmas (#85). Today's steps use only
+# `c` makes `axioms` unsatisfiable at no values; `model.definitions_ok`
+# shows the same for `definitions`, every definition's equation being
+# well-sorted. Today's steps use only
 # `facts` and `defined`; `axioms`, `definitions` and `arrays` are there for
 # the theory steps to come (S6b–S6e), so that adding them doesn't change
 # this statement.
@@ -675,3 +677,114 @@ export lemma axiom_premises_ok c a : c~Context, a~Axiom, list.contains (term.axi
     proof
         have term.axioms_well_sorted c
         have term.axiom_listed c (term.axioms c) a
+
+# `not fails` for a partial model: if `checks` accepts `refutation`, the
+# goal isn't false in any model `m` that a model `n` meeting
+# `checks_sound`'s premises extends (`model.monotone`: `n` says what `m`
+# says wherever `m` says something, names `m`'s arrays, and has `m`'s
+# elements). Every definite answer of `m` is `n`'s, and in `n` the goal
+# holds.
+export lemma not_refuted c goal refutation m n : c~Context, goal~Term, refutation~Refutation, checks c goal refutation,
+                                                 m~Model, n~Model,
+                                                 facts: model.holds_all c n (term.facts c),
+                                                 defined: (forall t : t~Term, list.contains (terms c goal refutation) t,
+                                                           model.has_value c n t),
+                                                 axioms: (forall a vs : a~Axiom, vs~List Value, list.contains (term.axioms c) a,
+                                                          values_among c n (terms c goal refutation) vs, model.holds_at c n a vs),
+                                                 definitions: (forall d_n d vs : d_n~Nat, d~Def, vs~List Value,
+                                                               list.contains (term.defs c) (d_n, d),
+                                                               values_among c n (terms c goal refutation) vs,
+                                                               model.holds_at c n (model.definition_axiom d_n d) vs),
+                                                 arrays: (forall s a b i j x env senv xs body : s~Sort, a~Nat, b~Nat, i~Value,
+                                                          j~Value, x~Value, env~List Value, senv~List Sort, xs~Sort, body~Term,
+                                                          values_among c n (terms c goal refutation)
+                                                          (ArrayElem a :: ArrayElem b :: i :: j :: x :: env),
+                                                          model.arrays_ok_at c n s a b i j x env senv xs body
+                                                          and model.arrays_total_at c n s a b i j x env senv xs body),
+                                                 said: (forall q v : q~model.Asked, v~Value, model.said m q == Some v,
+                                                        model.said n q == Some v),
+                                                 named: (forall s k : s~Sort, k~Nat, m.array_in s k, n.array_in s k),
+                                                 domains: (forall u args k : u~Nat, args~List Sort, k~Nat,
+                                                           model.of_sort c m (term.Unin u args) (model.Element k),
+                                                           model.of_sort c n (term.Unin u args) (model.Element k))
+    ensures not (model.fails c m goal)
+    proof
+        have checks_sound c goal refutation n
+        have model.holds_is c m goal
+        have model.holds_is c n goal
+        have model.not_both c n goal
+        if model.fails c m goal
+            have model.monotone c m n goal (model.Truth False)
+        else
+            auto
+
+# Every term a refutation `checks` accepts uses is a closed `Bool` term of
+# `c`: the goal, and each atom of each step's clause.
+lemma run_boolean c goal db steps out t : c~Context, goal~Term, db~List (List Lit), steps~List Step, out~List (List Lit),
+                                          t~Term, run c goal db steps == Some out, list.contains (terms_of c goal steps) t
+    ensures model.boolean c t
+    proof
+        match steps
+            []        -> auto
+            s :: rest ->
+                match step_clause c goal s
+                    Some cl ->
+                        have list.contains_append (atoms cl) (terms_of c goal rest) t
+                        if list.contains (atoms cl) t
+                            have booleans_contain c (atoms cl) t
+                        else
+                            have run_boolean c goal (cl :: db) rest out t
+                    None    -> auto
+
+lemma booleans_contain c ts t : c~Context, ts~List Term, t~Term, model.booleans c ts, list.contains ts t
+    ensures model.boolean c t
+    proof
+        match ts
+            []        -> auto
+            u :: rest -> if u == t then auto else have booleans_contain c rest t
+
+export lemma used_boolean c goal refutation t : c~Context, goal~Term, refutation~Refutation, t~Term, checks c goal refutation,
+                                                list.contains (terms c goal refutation) t
+    ensures model.boolean c t
+    proof
+        if t == goal
+            auto
+        else
+            match run c goal [] refutation.steps
+                Some out -> have run_boolean c goal [] refutation.steps out t
+                None     -> auto
+
+# In a total model, every term a checked refutation uses has a value.
+lemma all_defined c goal refutation m : c~Context, goal~Term, refutation~Refutation, checks c goal refutation, m~Model,
+                                        total: (forall r : r~model.Read, model.gives c m r),
+                                        arrays_total: (forall s a b i j x env senv xs body : s~Sort, a~Nat, b~Nat, i~Value,
+                                                       j~Value, x~Value, env~List Value, senv~List Sort, xs~Sort, body~Term,
+                                                       model.arrays_total_at c m s a b i j x env senv xs body)
+    ensures forall t : t~Term, list.contains (terms c goal refutation) t implies model.has_value c m t
+    proof
+        have used_boolean c goal refutation t
+        have model.total_has_value c m t term.Bool
+
+# `checks_sound` with its premises at all values (S-A): every function of
+# the model total (`model.gives` at every read), and the axioms, the
+# definitions' equations and the array laws, with the model answering, at
+# all values. It asks more of the model than `checks_sound`, so it follows
+# from it: `model.total_has_value` gives every term used a value.
+export lemma checks_sound_everywhere c goal refutation m : c~Context, goal~Term, refutation~Refutation,
+                                                           checks c goal refutation, m~Model,
+                                                           facts: model.holds_all c m (term.facts c),
+                                                           total: (forall r : r~model.Read, model.gives c m r),
+                                                           axioms: (forall a vs : a~Axiom, vs~List Value,
+                                                                    list.contains (term.axioms c) a, model.holds_at c m a vs),
+                                                           definitions: (forall n d vs : n~Nat, d~Def, vs~List Value,
+                                                                         list.contains (term.defs c) (n, d),
+                                                                         model.holds_at c m (model.definition_axiom n d) vs),
+                                                           arrays: (forall s a b i j x env senv xs body : s~Sort, a~Nat, b~Nat,
+                                                                    i~Value, j~Value, x~Value, env~List Value, senv~List Sort,
+                                                                    xs~Sort, body~Term,
+                                                                    model.arrays_ok_at c m s a b i j x env senv xs body
+                                                                    and model.arrays_total_at c m s a b i j x env senv xs body)
+    ensures model.holds c m goal
+    proof
+        have all_defined c goal refutation m
+        have checks_sound c goal refutation m

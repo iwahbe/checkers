@@ -195,6 +195,24 @@ fn f x -> y : x~Int, y~Int
         0
 ```
 
+**No block inside brackets.** Inside brackets lines continue, so no block can start there. A `match`, a `when`, a multi-line `if` or a `let` inside brackets is error E0125. Bind the value first, on a line of its own, and use its name; an `if` can also be written on one line, `if c then a else b`.
+
+```checkers,compile_fail,E0125
+fn either a b -> r : a~Bool, b~Option Nat, r~Bool
+    a
+        or (match b
+            Some _ -> True
+            None   -> False)
+```
+
+```checkers
+fn either a b -> r : a~Bool, b~Option Nat, r~Bool
+    let some = match b
+        Some _ -> True
+        None   -> False
+    a or some
+```
+
 Indentation is spaces only: a tab in a line's leading white space is error E0001. Blank lines and lines holding only a comment don't affect layout.
 
 **An unclosed bracket.** Inside a bracket newlines are ignored, so a missing `)` or `]` would swallow the declarations after it. A line that starts with a keyword that only ever begins a line (`fn`, `lemma`, `let`, `have`, `when`, `ensures`, `proof`, and others like them), and is indented no more than the line the bracket is on, closes the bracket instead, with error E0004 at the bracket. The declarations after it are then checked as usual.

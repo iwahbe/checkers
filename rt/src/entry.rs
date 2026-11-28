@@ -29,8 +29,8 @@ fn system() -> W {
 fn exit_code(r: W, owner: u32) -> i32 {
     let k = prog().known;
     let mut r = r;
-    // `main` runs as a behaviour (D123), whose future holds its result, which
-    // may itself be a `Future ExitCode` (D31).
+    // `main` runs as a behaviour (#610), whose future holds its result, which
+    // may itself be a `Future ExitCode` (#517).
     while let Some(Obj::Future(cell)) = obj(r) {
         let v = std::mem::replace(&mut *cell.v.lock().unwrap(), UNSET);
         if v == UNSET {
@@ -70,7 +70,7 @@ pub fn run_main(desc: &str, invoke: Invoke, debug: u64, main: W, owner: u32, arg
     TRACK.store(track, std::sync::atomic::Ordering::Relaxed);
     crate::behav::start_pool(threads);
     let argv = list(args.iter().map(|a| new_str(a)).collect());
-    // `main` is a behaviour like any other (D123): on one thread too, its
+    // `main` is a behaviour like any other (#610): on one thread too, its
     // waits let the others run.
     let r = crate::behav::start_main(dup(main), vec![argv, system()]);
     if threads > 1 {
@@ -100,7 +100,7 @@ pub fn default_threads() -> usize {
 /// `main` calls this.
 #[no_mangle]
 /// # Safety
-/// Called by native code with valid pointers (D72).
+/// Called by native code with valid pointers (#569).
 pub unsafe extern "C" fn ck_aot_main(
     argc: i32,
     argv: *const *const u8,

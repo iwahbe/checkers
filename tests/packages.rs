@@ -1,4 +1,4 @@
-//! Packages (M14, SPEC §16.4, D107–D111): `checkers` in a directory with
+//! Packages (M14, SPEC §16.4, #597, #598, #594, #595, #608): `checkers` in a directory with
 //! `checkers.json` resolves path and git dependencies (minimal version
 //! selection), keeps `checkers.lock`, and passes the packages to `ckc`.
 //! Git dependencies are local repositories, so this runs offline.
@@ -362,4 +362,50 @@ fn fetch_failures_are_reported_plainly() {
     let err = errors(&out);
     assert!(err.starts_with(&format!("checkers: could not fetch `util` from {}/nowhere: fatal: ", w.root.display())), "{err}");
     assert_eq!(err.lines().count(), 1, "{err}");
+}
+
+/// A runtime error in another package's private function names the function
+/// of that package the program called, however deep (SPEC §6 rule 9): the
+/// private `walk`, reached from `at`, from `first`, and through `list.map`
+/// from `every`, is named after each, whether or not `list.map` is
+/// specialized for the function `every` passes it.
+#[test]
+fn a_runtime_error_names_the_function_the_program_called() {
+    let w = World::new("runtime");
+    w.write(
+        "lib/pick.ck",
+        "module pick\n\nimport std.list\n\n\
+         export fn at xs i -> x : xs~Array Int, i~Nat, i < len xs, x~Int\n    element xs i\n\n\
+         export fn first xs -> x : xs~Array Int, len xs > 0, x~Int\n    element xs 0\n\n\
+         export fn every xs is -> ys : xs~Array Int, is~List Nat, ys~List Int\n    list.map (element xs) is\n\n\
+         lemma inside xs i : xs~Array Int, i~Nat\n    ensures i < len xs\n    proof\n        admit\n\n\
+         fn element xs i -> x : xs~Array Int, i~Nat, x~Int\n    have inside xs i\n    walk xs i 0\n\n\
+         fn walk xs i k -> x : xs~Array Int, i~Nat, k~Nat, k <= i, i < len xs, x~Int\n    decreasing i - k\n    if k == i then xs[i] else walk xs i (k + 1)\n",
+    );
+    // Each program calls one of them where the index is past the end, which
+    // only an `admit` says can't be, so the index is checked at run time;
+    // the first also calls `first` on an array where it holds.
+    let program = |elems: &str, call: &str| {
+        format!(
+            "module p\n\nimport std.system (System, ExitCode)\nimport std.terminal\nimport std.string (debug)\nimport std.array\nimport lib.pick\n\n\
+             lemma assumed xs : xs~Array Int\n    ensures len xs > 5\n    proof\n        admit\n\n\
+             export fn main args sys -> code : args~List String, sys~System, code~ExitCode\n    let xs = array.from_list {elems}\n    have assumed xs\n    terminal.print_line (debug ({call})) sys.term\n    Success\n"
+        )
+    };
+    for (elems, call, error) in [
+        ("[1, 2]", "pick.first xs + pick.at xs 5", "runtime error in `at`: index 5 out of bounds for an array of 2 elements\n"),
+        ("[]", "pick.first xs", "runtime error in `first`: index 0 out of bounds for an array of 0 elements\n"),
+        ("[1, 2]", "pick.every xs [1, 5]", "runtime error in `every`: index 5 out of bounds for an array of 2 elements\n"),
+    ] {
+        w.write("prog/p.ck", &program(elems, call));
+        for specialized in [true, false] {
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_ckc"));
+            cmd.args(["run", "--package", "lib=../lib", "--uses", ".=lib", "p.ck"]).current_dir(w.root.join("prog")).env("CHECKERS_NO_CACHE", "1");
+            if !specialized {
+                cmd.env("CHECKERS_NO_SPEC", "1");
+            }
+            let out = cmd.output().expect("run ckc");
+            assert_eq!((out.status.code(), text(&out.stderr)), (Some(70), error.to_string()), "{call}, specialized: {specialized}");
+        }
+    }
 }

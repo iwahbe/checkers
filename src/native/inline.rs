@@ -28,7 +28,7 @@
 //! a runtime error there names that definition, as it did when it was
 //! called.
 
-use super::ir::{shift, Ir, IrCase, Lit};
+use super::ir::{rename, shift, Ir, IrCase, Lit};
 use crate::core::DefId;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -56,15 +56,16 @@ pub struct Inliner<'a> {
     pub recursive: &'a mut HashMap<u32, bool>,
     /// Each definition's code after this rewriting, as far as computed.
     pub done: &'a mut HashMap<u32, Arc<Ir>>,
-    /// The definition whose code each definition's is: itself, or the one
-    /// a specialized copy copies (`spec`), which a runtime error names.
-    pub origin: &'a dyn Fn(u32) -> u32,
+    /// The definition a runtime error in each definition's code names:
+    /// itself, or for a copy (`spec`), the one it copies or the one it was
+    /// made for (`spec::report`).
+    pub owner: &'a dyn Fn(u32) -> Owner,
 }
 
 impl Inliner<'_> {
     /// `ir`, the code of `owner` (or of no definition), rewritten.
     pub fn program(&mut self, ir: &Ir, owner: Owner) -> Ir {
-        self.go(ir, owner, 0)
+        self.go(ir, &Sub::default(), owner, 0)
     }
 
     /// Definition `d`'s code, rewritten (once).
@@ -73,16 +74,22 @@ impl Inliner<'_> {
             return Some(x.clone());
         }
         let code = self.code.get(&d)?.clone();
-        let out = Arc::new(self.go(&code, Some(DefId((self.origin)(d))), 0));
+        let out = Arc::new(self.go(&code, &Sub::default(), (self.owner)(d), 0));
         self.done.insert(d, out.clone());
         Some(out)
     }
 
-    fn go(&mut self, ir: &Ir, here: Owner, depth: usize) -> Ir {
+    /// `ir`, rewritten, with its variables as `sub` has them.
+    fn go(&mut self, ir: &Ir, sub: &Sub, here: Owner, depth: usize) -> Ir {
         match ir {
+            Ir::Var(i) => sub.var(*i),
             Ir::Let(v, b) => {
-                let v = self.go(v, here, depth);
-                let b = self.go(b, here, depth);
+                let v = self.go(v, sub, here, depth);
+                // A variable or literal: substituted, as the body is rewritten.
+                if is_atom(&v) {
+                    return self.go(b, &sub.put(Arc::new(v)), here, depth);
+                }
+                let b = self.go(b, &sub.keep(1), here, depth);
                 // `let x = e in match x`, `x` used nowhere else: `match e`.
                 if let Ir::Case(x, c) = &b {
                     if matches!(**x, Ir::Var(0)) && !case_uses(c, 0) {
@@ -91,22 +98,22 @@ impl Inliner<'_> {
                 }
                 bind(Arc::new(v), b)
             }
-            Ir::At(o, x) => at(*o, self.go(x, *o, depth)),
+            Ir::At(o, x) => at(*o, self.go(x, sub, *o, depth)),
             Ir::Case(s, c) => {
-                let s = self.go(s, here, depth);
-                let mut a = |x: &Arc<Ir>| Arc::new(self.go(x, here, depth));
+                let s = self.go(s, sub, here, depth);
+                let mut a = |x: &Arc<Ir>, n: usize| Arc::new(self.go(x, &sub.keep(n), here, depth));
                 let c = IrCase {
-                    branches: c.branches.iter().map(|(con, n, b)| (*con, *n, a(b))).collect(),
-                    lits: c.lits.iter().map(|(l, b)| (l.clone(), a(b))).collect(),
-                    default: c.default.as_ref().map(&mut a),
+                    branches: c.branches.iter().map(|(con, n, b)| (*con, *n, a(b, *n))).collect(),
+                    lits: c.lits.iter().map(|(l, b)| (l.clone(), a(b, 0))).collect(),
+                    default: c.default.as_ref().map(|d| a(d, 0)),
                 };
                 self.case(s, c, here, depth)
             }
             Ir::Call(..) => {
-                let call = ir.map_subterms(|x, _| self.go(x, here, depth));
+                let call = ir.map_subterms(|x, k| self.go(x, &sub.keep(k), here, depth));
                 self.inline(&call, CALL_SIZE, here, depth).unwrap_or(call)
             }
-            _ => ir.map_subterms(|x, _| self.go(x, here, depth)),
+            _ => ir.map_subterms(|x, k| self.go(x, &sub.keep(k), here, depth)),
         }
     }
 
@@ -146,13 +153,13 @@ impl Inliner<'_> {
         }
         // The body's variables are its parameters, the first outermost:
         // bound by `let`s in the same order, each under the ones before.
-        let mut out = at(Some(DefId((self.origin)(f.0))), clone(body));
+        let mut out = at((self.owner)(f.0), clone(body));
         for (k, x) in args.iter().enumerate().rev() {
             out = bind(Arc::new(shift(x, k, 0)), out);
         }
         // A constructor passed in may now meet a `match` on it.
         if depth < MAX_DEPTH && args.iter().any(|x| is_con(x)) {
-            out = self.go(&out, here, depth + 1);
+            out = self.go(&out, &Sub::default(), here, depth + 1);
         }
         Some(out)
     }
@@ -184,6 +191,56 @@ impl Inliner<'_> {
         }
         self.recursive.insert(f, found);
         found
+    }
+}
+
+/// What the variables of code being rewritten (`Inliner::go`) are in the
+/// code it gives: for each binder inside the code it started at, innermost
+/// first, the binder it keeps, or the variable or literal put in for it.
+/// Putting one in is O(1): each variable is looked up as it is met, so code
+/// of n nested `let`s is rewritten in time in proportion to n, not n² as
+/// substituting each into its body was.
+#[derive(Clone, Default)]
+struct Sub {
+    binders: crate::pvec::PVec<Bound>,
+    /// How many of them are kept.
+    kept: usize,
+}
+
+#[derive(Clone)]
+enum Bound {
+    /// Kept, as the given binder (counted from the outermost kept).
+    Kept(usize),
+    /// Gone: this atom, over the first `n` kept binders.
+    Put(Arc<Ir>, usize),
+}
+
+impl Sub {
+    /// What variable `i` is.
+    fn var(&self, i: usize) -> Ir {
+        match self.binders.len().checked_sub(i + 1).and_then(|l| self.binders.get(l)) {
+            Some(Bound::Kept(l)) => Ir::Var(self.kept - 1 - l),
+            Some(Bound::Put(v, n)) => shift(v, self.kept - n, 0),
+            // Outside the code rewritten: past the binders kept.
+            None => Ir::Var(i - self.binders.len() + self.kept),
+        }
+    }
+
+    /// Under `n` more binders, kept.
+    fn keep(&self, n: usize) -> Sub {
+        let mut s = self.clone();
+        for _ in 0..n {
+            s.binders.push(Bound::Kept(s.kept));
+            s.kept += 1;
+        }
+        s
+    }
+
+    /// Under one more binder, with `v` (over the binders kept) put in for it.
+    fn put(&self, v: Arc<Ir>) -> Sub {
+        let mut binders = self.binders.clone();
+        binders.push(Bound::Put(v, self.kept));
+        Sub { binders, kept: self.kept }
     }
 }
 
@@ -367,7 +424,7 @@ fn is_atom(v: &Ir) -> bool {
 
 /// Whether every use of variable `x` in `b` is a projection that a tuple of
 /// `m` components gives as one of them: component `i` before the last, or
-/// the rest from the last (D174: the last may be a tuple laid out flat).
+/// the rest from the last (#673: the last may be a tuple laid out flat).
 fn projections_only(b: &Ir, x: usize, m: usize) -> bool {
     match b {
         Ir::Var(i) => *i != x,
@@ -573,17 +630,6 @@ fn sink(v: &Ir, b: &Ir, fuel: usize) -> Option<Ir> {
     }
 }
 
-/// `ir` with each free variable `i` renamed to `f(i)`.
-fn rename(ir: &Ir, f: &dyn Fn(usize) -> usize) -> Ir {
-    fn go(ir: &Ir, f: &dyn Fn(usize) -> usize, depth: usize) -> Ir {
-        match ir {
-            Ir::Var(i) if *i >= depth => Ir::Var(f(i - depth) + depth),
-            _ => ir.map_subterms(|x, n| go(x, f, depth + n)),
-        }
-    }
-    go(ir, f, 0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,13 +656,13 @@ mod tests {
         let code = HashMap::new();
         let mut rec = HashMap::new();
         let mut done = HashMap::new();
-        Inliner { code: &code, recursive: &mut rec, done: &mut done, origin: &|d| d }.program(ir, None)
+        Inliner { code: &code, recursive: &mut rec, done: &mut done, owner: &|d| Some(DefId(d)) }.program(ir, None)
     }
 
     fn run_with(code: &HashMap<u32, Arc<Ir>>, ir: &Ir) -> Ir {
         let mut rec = HashMap::new();
         let mut done = HashMap::new();
-        Inliner { code, recursive: &mut rec, done: &mut done, origin: &|d| d }.program(ir, None)
+        Inliner { code, recursive: &mut rec, done: &mut done, owner: &|d| Some(DefId(d)) }.program(ir, None)
     }
 
     fn calls(ir: &Ir) -> usize {

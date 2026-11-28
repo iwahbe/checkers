@@ -1,4 +1,4 @@
-# doc_links.ck — doc comments' links and code (D148 e): [twice], [`Pt`],
+# doc_links.ck — doc comments' links and code (#642 e): [twice], [`Pt`],
 # [Pt.x], [`std.list`], [Option] and [Some] resolve; [nothing] and
 # [list.nope] don't (W030); [helper] isn't exported (W031); [x, y], [0] and
 # `[code]` aren't links, nor is [a link](https://example.com), and [defined]

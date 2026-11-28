@@ -1,4 +1,4 @@
-# checkers.ck — `checkers`, the build tool (D95, SPEC §15.1). It passes the
+# checkers.ck — `checkers`, the build tool (#586, SPEC §15.1). It passes the
 # compiler's commands to `ckc` and has commands of its own: `fmt`.
 
 module checkers
@@ -99,7 +99,7 @@ partial fn with_main args -> r : args~List String, r~List String
                 "main.ck" :: args
         []                       -> ["main.ck"]
 
-# A compiler command in a package's directory (D111): resolve its
+# A compiler command in a package's directory (#608): resolve its
 # dependencies, then tell `ckc` about them.
 partial fn in_package command rest c -> code : command~String, rest~List String, c~Caps, code~ExitCode
     match packages.resolve c

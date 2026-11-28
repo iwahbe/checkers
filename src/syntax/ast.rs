@@ -60,7 +60,7 @@ pub enum Mult {
     Many,
     Ghost,
     Own,
-    /// `x~comptime T`: known at compile time (§8.9, D59).
+    /// `x~comptime T`: known at compile time (§8.9, #541).
     Comptime,
 }
 
@@ -71,7 +71,7 @@ pub enum Constraint {
     /// A Bool/Prop predicate.
     Pred(Expr),
     /// `name: p`, a precondition with a name, which may contain `forall`
-    /// (D137); used in the body by `have name a b …`.
+    /// (#632); used in the body by `have name a b …`.
     Named(Ident, Expr),
 }
 
@@ -79,7 +79,7 @@ pub enum Constraint {
 #[derive(Clone, Debug)]
 pub struct RefineTy {
     pub param: Option<Ident>,
-    /// `own` written on the parameter of a refined function type (D172 b).
+    /// `own` written on the parameter of a refined function type (#672 b).
     pub own: bool,
     pub dom: Expr,
     pub arrow: Option<(Option<Ident>, Expr)>,
@@ -181,14 +181,14 @@ pub enum DeclKind {
     Check {
         expr: Expr,
     },
-    /// `class Ord a` and what each instance must supply (D136); a class may
+    /// `class Ord a` and what each instance must supply (#615); a class may
     /// take several type parameters (`class Hole s h`, #145).
     Class {
         name: Ident,
         params: Vec<Ident>,
         members: Vec<ClassMember>,
     },
-    /// `instance Ord (List a) : Ord a` (D136); a type for each of the
+    /// `instance Ord (List a) : Ord a` (#615); a type for each of the
     /// class's parameters (`instance Hole Format a : Display a`, #145).
     /// The class is `Con` (`Ord`), or `Field` of a `Var` through its
     /// module's qualifier (`order.Ord`).
@@ -242,9 +242,9 @@ pub struct Block {
 pub enum Stmt {
     Let(Pattern, Expr),
     Have(Expr),
-    /// `have x~T`: `x` has type `T` (D170)
+    /// `have x~T`: `x` has type `T` (#660)
     HaveType(Ident, Expr),
-    /// A bare expression line that is not the block's last; must be `Unit` (D35)
+    /// A bare expression line that is not the block's last; must be `Unit` (#527)
     Expr(Expr),
     /// `let t = T`, binding a type `ghost`: what an instance's function has
     /// for a class's parameter it takes explicitly (`t~ghost Type`, #161).
@@ -281,7 +281,7 @@ pub enum ExprKind {
     When(When),
     /// lower-case name
     Var(String),
-    /// Upper-case name: constructor, type, or constant (resolved later, D26)
+    /// Upper-case name: constructor, type, or constant (resolved later, #521)
     Con(String),
     Lit(Lit),
     Unit,
@@ -292,7 +292,7 @@ pub enum ExprKind {
     /// Function type `a -> b`
     Arrow(Box<Expr>, Box<Expr>),
     /// A refinement type `(n~Int, n >= 5)` or a refined function type
-    /// `(x~Int -> y~Int, x >= 5, y > x)` written inside a type (D82).
+    /// `(x~Int -> y~Int, x >= 5, y > x)` written inside a type (#576).
     Refine(Box<RefineTy>),
     Neg(Box<Expr>),
     /// `(+)`
@@ -312,9 +312,9 @@ pub enum ExprKind {
     Block(Block),
     Auto,
     Admit,
-    /// `par (e1, …, en)` (D34)
+    /// `par (e1, …, en)` (#522)
     Par(Vec<Expr>),
-    /// `forall x y : x~a, y~a, p x y` (D137): variables, then clauses that
+    /// `forall x y : x~a, y~a, p x y` (#632): variables, then clauses that
     /// mention them, the last the conclusion.
     Forall(Vec<Ident>, Vec<Constraint>),
     /// `tag"text {e | o1, o2} text"` (#132): the tag, and the template's
@@ -360,7 +360,7 @@ pub enum PatKind {
     List(Vec<Pattern>),
     Cons(Box<Pattern>, Box<Pattern>),
     Or(Vec<Pattern>),
-    /// `Ctor { a, b = p }` (D32)
+    /// `Ctor { a, b = p }` (#519)
     Record(Ident, Vec<(Ident, Pattern)>),
 }
 

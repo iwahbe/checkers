@@ -232,13 +232,13 @@ impl Elab {
         }
         let t = quote(&self.g, lvl, v);
         let t = self.rep_tm(lvl, &t);
-        let env = Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+        let env = (0..lvl).map(Val::var).collect::<crate::core::Env>();
         eval(&self.g, &env, &t)
     }
 
     fn rep_tm(&self, lvl: usize, t: &Tm) -> Tm {
         if !matches!(t, Tm::Lit(_) | Tm::Univ(_) | Tm::Error) {
-            let env = Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+            let env = (0..lvl).map(Val::var).collect::<crate::core::Env>();
             if let Some(r) = self.rep_of(&eval(&self.g, &env, t)) {
                 return quote(&self.g, lvl, &r);
             }
@@ -264,30 +264,42 @@ impl Elab {
         if unify(&self.g, lvl, a, b).is_err() {
             return false;
         }
-        self.exact_inner(lvl, a, b, 0)
-    }
-
-    fn exact_inner(&self, lvl: usize, a: &Val, b: &Val, depth: usize) -> bool {
-        if depth > 32 {
-            return true;
-        }
-        let (pa, pb) = (self.peel(a), self.peel(b));
-        match (self.refined_alias(&pa), self.refined_alias(&pb)) {
-            (Some((d1, x1)), Some((d2, x2))) => {
-                return d1 == d2 && x1.len() == x2.len() && x1.iter().zip(&x2).all(|(x, y)| self.exact_inner(lvl, x, y, depth + 1));
+        // Every part, however deep: a worklist.
+        let mut work = vec![(lvl, a.clone(), b.clone())];
+        while let Some((lvl, a, b)) = work.pop() {
+            let (pa, pb) = (self.peel(&a), self.peel(&b));
+            match (self.refined_alias(&pa), self.refined_alias(&pb)) {
+                (Some((d1, x1)), Some((d2, x2))) => {
+                    if d1 != d2 || x1.len() != x2.len() {
+                        return false;
+                    }
+                    work.extend(x1.iter().zip(&x2).map(|(x, y)| (lvl, x.clone(), y.clone())));
+                    continue;
+                }
+                (Some(_), None) | (None, Some(_)) => return false,
+                _ => {}
             }
-            (Some(_), None) | (None, Some(_)) => return false,
-            _ => {}
-        }
-        match (force(&self.g, pa), force(&self.g, pb)) {
-            (Val::TyCon(t1, x1), Val::TyCon(t2, x2)) => t1 == t2 && x1.iter().zip(x2.iter()).all(|(x, y)| self.exact_inner(lvl, x, y, depth + 1)),
-            (Val::TupleTy(x1), Val::TupleTy(x2)) => x1.len() == x2.len() && x1.iter().zip(x2.iter()).all(|(x, y)| self.exact_inner(lvl, x, y, depth + 1)),
-            (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
-                self.exact_inner(lvl, &a1, &a2, depth + 1)
-                    && self.exact_inner(lvl + 1, &apply_closure(&self.g, &c1, Val::var(lvl)), &apply_closure(&self.g, &c2, Val::var(lvl)), depth + 1)
+            match (force(&self.g, pa), force(&self.g, pb)) {
+                (Val::TyCon(t1, x1), Val::TyCon(t2, x2)) => {
+                    if t1 != t2 {
+                        return false;
+                    }
+                    work.extend(x1.iter().zip(x2.iter()).map(|(x, y)| (lvl, x.clone(), y.clone())));
+                }
+                (Val::TupleTy(x1), Val::TupleTy(x2)) => {
+                    if x1.len() != x2.len() {
+                        return false;
+                    }
+                    work.extend(x1.iter().zip(x2.iter()).map(|(x, y)| (lvl, x.clone(), y.clone())));
+                }
+                (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
+                    work.push((lvl + 1, apply_closure(&self.g, &c1, Val::var(lvl)), apply_closure(&self.g, &c2, Val::var(lvl))));
+                    work.push((lvl, (*a1).clone(), (*a2).clone()));
+                }
+                _ => {}
             }
-            _ => true,
         }
+        true
     }
 
     /// The equations of `d` (a function) or `c` (a constructor) at a use:
@@ -385,7 +397,7 @@ impl Elab {
     /// at a place it is written with arguments: wanted.
     pub fn want_type_teq(&mut self, cx: &Cx, tid: TyId, args: &[Val], q: &TyEq, span: Span) {
         let ty = self.g.tys[tid.0 as usize].name.to_string();
-        let env = Rc::new(args.to_vec());
+        let env = crate::core::Env::from(args.to_vec());
         let (lhs, rhs) = (eval(&self.g, &env, &q.lhs), eval(&self.g, &env, &q.rhs));
         // The type's parameters the equation names, at this use.
         let params = self.g.tys[tid.0 as usize]
@@ -422,7 +434,7 @@ impl Elab {
     }
 
     fn ty_teqs_tm(&self, lvl: usize, t: &Tm, out: &mut Vec<(TyId, Vec<Val>, TyEq)>) {
-        let env = Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+        let env = (0..lvl).map(Val::var).collect::<crate::core::Env>();
         let (head, args): (Option<TyId>, Vec<Tm>) = match t {
             Tm::TyConApp(tid, xs) => (Some(*tid), xs.clone()),
             _ => match t.spine() {
@@ -450,7 +462,7 @@ impl Elab {
     }
 
     fn inst_tm(&self, t: &Tm, env: &[Val]) -> Val {
-        eval(&self.g, &Rc::new(env.to_vec()), t)
+        eval(&self.g, &crate::core::Env::from(env.to_vec()), t)
     }
 
     /// Solve the wanted equations whose types are known; at the `last`
@@ -469,7 +481,7 @@ impl Elab {
                 continue;
             }
             // A class's type at a known instance, as the instance gives it.
-            let env = Rc::new((0..w.lvl).map(Val::var).collect::<Vec<_>>());
+            let env = (0..w.lvl).map(Val::var).collect::<crate::core::Env>();
             let (l, rr) = (
                 eval(&self.g, &env, &self.reduce_assoc(w.lvl, &quote(&self.g, w.lvl, &w.lhs))),
                 eval(&self.g, &env, &self.reduce_assoc(w.lvl, &quote(&self.g, w.lvl, &w.rhs))),
