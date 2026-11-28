@@ -754,6 +754,22 @@ mod tests {
         })
     }
 
+    /// An operation computed when compiling whose value is a function is
+    /// static data (§8.9, tests/run/folded_function.ck): `pick`'s arms are
+    /// lambdas' closures laid out in the program, so its code is that of
+    /// `by_hand`, which returns constants; `pick_partial`'s, a function
+    /// given an argument, are laid out the same way.
+    #[test]
+    fn functions_computed_when_compiling_are_static() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("folded_function", triple);
+                assert_eq!(code_of(&code, "pick"), code_of(&code, "by_hand"), "{triple}");
+                assert_eq!(code_of(&code, "pick_partial"), code_of(&code, "by_hand"), "{triple}");
+            }
+        })
+    }
+
     /// Code put into a function from another (`at`: a small function
     /// inlined) compiles as the same code written there: a comparison's
     /// `Bool` is branched on, not built and dropped, and a remainder by a
