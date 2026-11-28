@@ -4147,3 +4147,284 @@ lemma form_below f : f~Form
         have number_at_least (value_bytes f.base ++ n) 1
         have list.append_nil st
         have stores_inner_below f.stores [] (number_of (value_bytes f.base ++ n) 1)
+
+# Normalizing stores keeps what they read.
+
+lemma read_insert j x st b i : j~Value, x~Value, st~List (Value, Value), b~Value, i~Value
+    ensures read_stores_at (insert_store j x st) b i == (if i == j then x else read_stores_at st b i)
+    proof
+        match st
+            []             -> auto
+            (k, y) :: rest -> if j == k or before j k then auto else have read_insert j x rest b i
+
+lemma read_sort st b i : st~List (Value, Value), b~Value, i~Value
+    ensures read_stores_at (sort_stores st) b i == read_stores_at st b i
+    proof
+        match st
+            []             -> auto
+            (j, x) :: rest ->
+                have read_insert j x (sort_stores rest) b i
+                have read_sort rest b i
+
+lemma sorted_skip j x k y more : j~Value, x~Value, k~Value, y~Value, more~List (Value, Value),
+                                 sorted_stores ((j, x) :: (k, y) :: more)
+    ensures sorted_stores ((j, x) :: more) and sorted_stores ((k, y) :: more)
+    proof
+        match more
+            []          -> auto
+            (l, _) :: _ -> have before_transitive j k l
+
+# A sorted list has no other store at its first index.
+lemma sorted_head_absent j x rest b : j~Value, x~Value, rest~List (Value, Value), b~Value, sorted_stores ((j, x) :: rest)
+    ensures read_stores_at rest b j == b
+    proof
+        match rest
+            []             -> auto
+            (k, y) :: more ->
+                have before_irreflexive j
+                have sorted_skip j x k y more
+                have sorted_head_absent j x more b
+
+lemma sorted_tail j x rest : j~Value, x~Value, rest~List (Value, Value), sorted_stores ((j, x) :: rest)
+    ensures sorted_stores rest
+    proof
+        match rest
+            []     -> auto
+            _ :: _ -> auto
+
+lemma read_drop b st i : b~Value, st~List (Value, Value), i~Value, sorted_stores st
+    ensures read_stores_at (drop_base b st) b i == read_stores_at st b i
+    proof
+        match st
+            []             -> auto
+            (j, x) :: rest ->
+                have sorted_tail j x rest
+                have read_drop b rest i
+                have sorted_head_absent j x rest b
+                have read_drop b rest j
+
+# Every store of `drop_base b st` is after `j`, if every store of `st` is.
+fn all_after j st -> r : j~Value, st~List (Value, Value), r~Bool
+    match st
+        []             -> True
+        (k, _) :: rest -> before j k and all_after j rest
+
+lemma sorted_all_after j x rest : j~Value, x~Value, rest~List (Value, Value), sorted_stores ((j, x) :: rest)
+    ensures all_after j rest
+    proof
+        match rest
+            []             -> auto
+            (k, y) :: more ->
+                have sorted_skip j x k y more
+                have sorted_all_after j x more
+
+lemma after_sorted j x rest : j~Value, x~Value, rest~List (Value, Value), all_after j rest, sorted_stores rest
+    ensures sorted_stores ((j, x) :: rest)
+    proof
+        match rest
+            []     -> auto
+            _ :: _ -> auto
+
+lemma drop_all_after j b st : j~Value, b~Value, st~List (Value, Value), all_after j st
+    ensures all_after j (drop_base b st)
+    proof
+        match st
+            []        -> auto
+            _ :: rest -> have drop_all_after j b rest
+
+lemma sorted_drop b st : b~Value, st~List (Value, Value), sorted_stores st
+    ensures sorted_stores (drop_base b st) and no_store_of b (drop_base b st)
+    proof
+        match st
+            []             -> auto
+            (j, x) :: rest ->
+                have sorted_tail j x rest
+                have sorted_drop b rest
+                have sorted_all_after j x rest
+                have drop_all_after j b rest
+                have after_sorted j x (drop_base b rest)
+
+lemma insert_all_after k j x st : k~Value, j~Value, x~Value, st~List (Value, Value), all_after k st, before k j
+    ensures all_after k (insert_store j x st)
+    proof
+        match st
+            []        -> auto
+            _ :: rest -> have insert_all_after k j x rest
+
+lemma sorted_insert j x st : j~Value, x~Value, st~List (Value, Value), sorted_stores st
+    ensures sorted_stores (insert_store j x st)
+    proof
+        match st
+            []             -> auto
+            (k, y) :: rest ->
+                have sorted_tail k y rest
+                have sorted_all_after k y rest
+                if j == k
+                    have after_sorted j x rest
+                else if before j k
+                    auto
+                else
+                    have before_total j k
+                    have sorted_insert j x rest
+                    have insert_all_after k j x rest
+                    have after_sorted k y (insert_store j x rest)
+
+lemma sorted_sort st : st~List (Value, Value)
+    ensures sorted_stores (sort_stores st)
+    proof
+        match st
+            []             -> auto
+            (j, x) :: rest ->
+                have sorted_sort rest
+                have sorted_insert j x (sort_stores rest)
+
+# At a listed index sort.
+
+# Whether every one of `es` is after `p`.
+fn vals_after p es -> r : p~Value, es~List Value, r~Bool
+    match es
+        []        -> True
+        e :: rest -> before p e and vals_after p rest
+
+# Whether each of `es` is before the next.
+fn sorted_values es -> r : es~List Value, r~Bool
+    match es
+        []             -> True
+        [_]            -> True
+        e :: f :: rest -> before e f and sorted_values (f :: rest)
+
+lemma sorted_values_after e rest : e~Value, rest~List Value, sorted_values (e :: rest)
+    ensures vals_after e rest and sorted_values rest
+    proof
+        match rest
+            []        -> auto
+            f :: more ->
+                match more
+                    []     -> auto
+                    g :: _ ->
+                        have before_transitive e f g
+                        have sorted_values_after e (g :: list.drop 1 more)
+                        have sorted_values_after f more
+
+lemma after_absent p es : p~Value, es~List Value, vals_after p es
+    ensures not (list.contains es p)
+    proof
+        match es
+            []        -> auto
+            _ :: rest ->
+                have before_irreflexive p
+                have after_absent p rest
+
+lemma listed_absent es st base a j : es~List Value, st~List (Value, Value), base~Value, a~Value, j~Value,
+                                     not (list.contains es j)
+    ensures read_stores_at (listed_stores es st base a) a j == a
+    proof
+        match es
+            []        -> auto
+            _ :: rest -> have listed_absent rest st base a j
+
+lemma listed_read es st base a j : es~List Value, st~List (Value, Value), base~Value, a~Value, j~Value,
+                                   sorted_values es, list.contains es j
+    ensures read_stores_at (listed_stores es st base a) a j == read_stores_at st base j
+    proof
+        match es
+            []        -> auto
+            e :: rest ->
+                have sorted_values_after e rest
+                if e == j
+                    have after_absent e rest
+                    have listed_absent rest st base a j
+                else
+                    have listed_read rest st base a j
+
+lemma listed_after p es st base a : p~Value, es~List Value, st~List (Value, Value), base~Value, a~Value, vals_after p es
+    ensures all_after p (listed_stores es st base a)
+    proof
+        match es
+            []        -> auto
+            _ :: rest -> have listed_after p rest st base a
+
+lemma listed_canonical es st base a : es~List Value, st~List (Value, Value), base~Value, a~Value, sorted_values es
+    ensures sorted_stores (listed_stores es st base a) and no_store_of a (listed_stores es st base a)
+        and all_listed es (listed_stores es st base a)
+    proof
+        match es
+            []        -> auto
+            e :: rest ->
+                have sorted_values_after e rest
+                have listed_canonical rest st base a
+                have listed_after e rest st base a
+                have after_sorted e (read_stores_at st base e) (listed_stores rest st base a)
+                have all_listed_grow e rest (listed_stores rest st base a)
+
+lemma all_listed_grow e es st : e~Value, es~List Value, st~List (Value, Value), all_listed es st
+    ensures all_listed (e :: es) st
+    proof
+        match st
+            []        -> auto
+            _ :: rest -> have all_listed_grow e es rest
+
+lemma elements_sorted k count : k~Nat, count~Nat
+    ensures sorted_values (elements_from k count)
+    proof
+        decreasing count
+        if count <= 1 then auto else have elements_sorted (k + 1) (count - 1)
+
+lemma listed_sorted sig dom i es : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort, es~List Value, index_kind sig dom i == Listed es
+    ensures sorted_values es
+    proof
+        match i
+            Unin u args ->
+                match dom u args
+                    UpTo n -> have elements_sorted 0 (n + 1)
+                    _      -> auto
+            _           -> auto
+
+# Whether `j` is an index the normal form at `i` speaks for: every value
+# at an index sort that isn't listed, else one of the listed ones.
+fn indexed sig dom i j -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort, j~Value, r~Bool
+    match index_kind sig dom i
+        Listed es -> list.contains es j
+        _         -> True
+
+lemma normalize_ok sig dom i base stores f j : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort, base~Value,
+                                               stores~List (Value, Value), f~Form, j~Value,
+                                               normalize sig dom i base stores == Some f
+    ensures canonical sig dom i f.base f.stores
+        and (indexed sig dom i j implies read_stores_at f.stores f.base j == read_stores_at stores base j)
+    proof
+        match index_kind sig dom i
+            Listed es ->
+                have listed_sorted sig dom i es
+                match es
+                    first :: others ->
+                        let a = read_stores_at stores base first
+                        have sorted_values_after first others
+                        have listed_canonical others stores base a
+                        have after_absent first others
+                        have listed_absent others stores base a first
+                        if list.contains others j then have listed_read others stores base a j else auto
+                    []              -> auto
+            Unbounded ->
+                have sorted_sort stores
+                have sorted_drop base (sort_stores stores)
+                have read_drop base (sort_stores stores) j
+                have read_sort stores base j
+            Opaque    -> auto
+
+lemma elements_has k count n : k~Nat, count~Nat, n~Nat, k <= n, n < k + count
+    ensures list.contains (elements_from k count) (Element n)
+    proof
+        decreasing count
+        if n == k then auto else have elements_has (k + 1) (count - 1) n
+
+# An index of its sort is one the normal forms speak for.
+lemma index_indexed c m i j : c~Context, m~Model, i~Sort, j~Value, of_sort c m i j
+    ensures indexed (term.signature c) m.domain i j
+    proof
+        match (i, j)
+            (Unin u args, Element n) ->
+                match m.domain u args
+                    UpTo k -> if k < LISTED then have elements_has 0 (k + 1) n else auto
+                    _      -> auto
+            _                        -> auto
